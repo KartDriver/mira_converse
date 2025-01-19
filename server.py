@@ -6,6 +6,13 @@ import torch
 import numpy as np
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 import time
+import sys
+sys.path.append('/mnt/models/hexgrad/Kokoro-82M')
+from models import build_model
+#!/usr/bin/env python3
+
+import asyncio
+import websockets
 from collections import deque
 from audio_core import AudioCore
 
@@ -15,12 +22,13 @@ from audio_core import AudioCore
 
 # Change "cuda:4" to your preferred GPU index or use "cuda:0" if you only have one GPU
 device = "cuda:4" if torch.cuda.is_available() else "cpu"
+KOKORO_PATH = "/mnt/models/hexgrad/Kokoro-82M"
 torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
 
 MODEL_PATH = "/mnt/models/openai/whisper-large-v3-turbo"
 
 print(f"Device set to use {device}")
-print("Loading model and processor...")
+print("Loading ASR model and processor...")
 
 # Load model and processor
 model = AutoModelForSpeechSeq2Seq.from_pretrained(
@@ -41,6 +49,14 @@ asr_pipeline = pipeline(
     torch_dtype=torch_dtype,
     device=device
 )
+
+print("Loading TTS model...")
+# Load Kokoro TTS model
+tts_model = build_model(f'{KOKORO_PATH}/kokoro-v0_19.pth', device)
+VOICE_NAME = 'af'  # Default voice (50-50 mix of Bella & Sarah)
+tts_voicepack = torch.load(f'{KOKORO_PATH}/voices/{VOICE_NAME}.pt', weights_only=True).to(device)
+
+from kokoro import generate
 
 ################################################################################
 # AUDIO SERVER
@@ -102,6 +118,38 @@ class AudioServer:
 ################################################################################
 # WEBSOCKET HANDLER
 ################################################################################
+
+async def handle_tts(websocket, text):
+    """Handle text-to-speech request and stream audio back to client"""
+    try:
+        print(f"\n[TTS] Generating audio for text: {text[:50]}...")
+        # Generate audio using Kokoro
+        audio, _ = generate(tts_model, text, tts_voicepack, lang=VOICE_NAME[0])
+        print(f"[TTS] Generated {len(audio)} samples at 24kHz ({len(audio)/24000:.2f} seconds)")
+        
+        # Convert float audio directly to int16 PCM
+        audio = np.clip(audio, -1.0, 1.0)
+        audio_int16 = (audio * 32767.0).astype(np.int16)
+        
+        # Send audio in chunks
+        CHUNK_SIZE = 4096  # Send 4KB chunks
+        total_chunks = (len(audio_int16) + CHUNK_SIZE - 1) // CHUNK_SIZE
+        print(f"[TTS] Sending audio in {total_chunks} chunks of {CHUNK_SIZE} samples")
+        
+        for i in range(0, len(audio_int16), CHUNK_SIZE):
+            chunk = audio_int16[i:i + CHUNK_SIZE]
+            chunk_num = i // CHUNK_SIZE + 1
+            print(f"[TTS] Sending chunk {chunk_num}/{total_chunks} ({len(chunk)} samples)")
+            # Prefix with TTS identifier
+            await websocket.send(b'TTS:' + chunk.tobytes())
+            
+        # Send end marker
+        await websocket.send(b'TTS_END')
+        print("[TTS] Finished sending audio")
+        
+    except Exception as e:
+        print(f"TTS Error: {e}")
+        await websocket.send("TTS_ERROR")
 
 async def transcribe_audio(websocket):
     """
@@ -192,6 +240,11 @@ async def transcribe_audio(websocket):
                 elif message.strip() == "EXIT":
                     print("Client requested exit. Closing connection.")
                     break
+                elif message.startswith("TTS:"):
+                    # Handle TTS request
+                    text = message[4:].strip()  # Remove TTS: prefix
+                    print(f"TTS Request: {text}")
+                    await handle_tts(websocket, text)
                 else:
                     print(f"Received unknown text message: {message}")
 

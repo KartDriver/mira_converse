@@ -21,6 +21,7 @@ import asyncio
 import websockets
 import numpy as np
 import samplerate
+import pyaudio
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtCore import QTimer
 import sys
@@ -31,6 +32,7 @@ from collections import deque
 from volume_window import VolumeWindow
 from audio_core import AudioCore
 from llm_client import LLMClient
+from audio_output import AudioOutput
 
 # Server configuration
 SERVER_URI = "ws://10.5.2.10:8765"  # Or ws://<server-ip>:8765 if remote
@@ -173,18 +175,40 @@ async def record_and_send_audio(websocket, volume_window):
             if p is not None:
                 p.terminate()
 
+
+
 async def receive_transcripts(websocket):
     """
     Continuously receive transcripts from the server and print them in the client console.
     Also detects if the trigger word appears in the first 3 words of the transcript.
-    When triggered, sends the transcript to the LLM for processing.
+    When triggered, sends the transcript to the LLM for processing and handles TTS playback.
     """
     try:
         llm_client = LLMClient()
+        audio_output = AudioOutput()
+        
         while True:
-            msg = await websocket.recv()  # Wait for text message
+            msg = await websocket.recv()  # Wait for message
+            
+            # Handle TTS audio chunks
+            if isinstance(msg, bytes):
+                if msg.startswith(b'TTS:'):
+                    # Start audio stream if not started
+                    audio_output.start_stream()
+                    # Play the audio chunk (removing TTS: prefix)
+                    audio_output.play_chunk(msg[4:])
+                elif msg == b'TTS_END':
+                    # Pause the audio stream
+                    audio_output.pause()
+                continue
+                
+            # Handle text messages
             print(f"\nTranscript: {msg}")
             
+            if msg == "TTS_ERROR":
+                print("\n[ERROR] TTS generation failed")
+                continue
+                
             # Check if trigger word is in first 3 words
             # Clean words by removing punctuation and converting to lowercase
             first_three_words = [word.strip('.,!?').lower() for word in msg.split()[:3]]
@@ -194,7 +218,10 @@ async def receive_transcripts(websocket):
                 # Process with LLM - response will be streamed in real-time
                 print("\n[AI RESPONSE] ", end="", flush=True)
                 response = await llm_client.process_trigger(msg)
-                if not response:
+                if response:
+                    # Send response to TTS
+                    await websocket.send(f"TTS:{response}")
+                else:
                     print("\n[ERROR] Failed to get AI response")
     except websockets.ConnectionClosed:
         print("Server closed connection.")
