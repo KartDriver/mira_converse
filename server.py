@@ -121,12 +121,6 @@ class AudioProcessor:
             alpha = 1.0 - np.exp(-dt / self.peak_release)
         self.peak_level = self.peak_level + (db_peak - self.peak_level) * alpha
         
-        # Update noise floor
-        self.floor_window.append(self.rms_level)
-        self.noise_floor = max(self.min_floor, 
-                             min(self.max_floor, 
-                                 np.percentile(self.floor_window, 15)))
-        
         # Spectral analysis for speech detection
         freqs, times, Sxx = signal.spectrogram(emphasized, fs=16000, 
                                              nperseg=256, noverlap=128)
@@ -138,54 +132,79 @@ class AudioProcessor:
         # Calculate zero-crossings
         zero_crossings = np.sum(np.abs(np.diff(np.signbit(emphasized)))) / len(emphasized)
         
+        # Debug levels periodically
+        current_time = time.time()
+        if not hasattr(self, 'last_debug_time'):
+            self.last_debug_time = 0
+        if current_time - self.last_debug_time >= 1.0:  # Every second
+            print(f"\nLevels: RMS={self.rms_level:.1f}dB Floor={self.noise_floor:.1f}dB "
+                  f"Ratio={speech_ratio:.2f} ZC={zero_crossings:.3f}")
+            self.last_debug_time = current_time
+            
+        # Quick speech check for floor tracking (basic check)
+        quick_speech_check = speech_ratio > 1.05  # Only use ratio for floor protection
+        
+        # Initialize floor tracking if needed
+        if not hasattr(self, 'floor_slow'):
+            self.floor_slow = self.rms_level
+            
+        # Simple professional noise floor tracking
+        if self.rms_level < self.floor_slow:
+            # Fast attack for quieter levels (100ms)
+            alpha = 1.0 - np.exp(-dt / 0.1)
+        else:
+            # Very slow release (5 seconds) - never chase peaks
+            alpha = 1.0 - np.exp(-dt / 5.0)
+            
+        # Update floor with limits
+        self.floor_slow = max(
+            self.min_floor,
+            min(self.max_floor,
+                self.floor_slow + (self.rms_level - self.floor_slow) * alpha
+            )
+        )
+        
         # Initialize detection history if needed
         if not hasattr(self, 'detection_history'):
             self.detection_history = deque([False] * 5, maxlen=5)  # Last 5 frames
             self.speech_count = 0  # Count of consecutive speech frames
         
-        # Multi-criteria speech detection with adaptive thresholds
-        level_above_floor = self.rms_level - self.noise_floor
+        # Classic noise gate with typical speech thresholds
+        OPEN_THRESHOLD = -45.0   # Open at -45 dB (normal speech)
+        CLOSE_THRESHOLD = -48.0  # Close at -48 dB (3dB hysteresis)
         
-        # Primary detection criteria
-        basic_speech = (
-            level_above_floor > 6.0 and          # 6dB above floor
-            speech_ratio > 0.45 and              # 45% energy in speech bands
-            zero_crossings > 0.0003 and          # Minimum voice-like zero crossings
-            zero_crossings < 0.15 and            # Maximum to filter noise
-            len(emphasized) >= 800               # Minimum 50ms duration
-        )
+        # Basic speech validation (just check for speech-like spectrum)
+        has_speech_character = speech_ratio > 1.03  # More permissive
         
-        # Strong speech indicators
-        strong_speech = (
-            level_above_floor > 10.0 or          # Much higher level
-            (speech_ratio > 0.7 and              # Very speech-like
-             level_above_floor > 4.0)            # with decent level
-        )
+        # Simple threshold detection with hysteresis
+        if not self.is_speaking:
+            # Need to exceed open threshold to start
+            is_speech = self.rms_level > OPEN_THRESHOLD and has_speech_character
+        else:
+            # Can stay open until hitting close threshold
+            is_speech = self.rms_level > CLOSE_THRESHOLD
         
-        # Combine detections with historical context
-        is_speech = basic_speech or strong_speech
-        self.detection_history.append(is_speech)
+        # Debug output (focused on decision factors)
+        if self.rms_level > CLOSE_THRESHOLD - 6:  # Show when getting close
+            print(f"Gate Check: Level={self.rms_level:.1f}dB "
+                  f"Thresh={OPEN_THRESHOLD if not self.is_speaking else CLOSE_THRESHOLD:.1f}dB "
+                  f"Speech={has_speech_character} "
+                  f"-> {is_speech}")
         
-        # Count consecutive speech frames
+        # Professional envelope following (dbx-style)
         if is_speech:
-            self.speech_count += 1
+            # Fast attack (5ms)
+            attack_time = 0.005
+            alpha = 1.0 - np.exp(-dt / attack_time)
+            self.speech_count = min(1.0, self.speech_count + alpha)
         else:
-            self.speech_count = max(0, self.speech_count - 1)
-        
-        # Update speaking state with hysteresis
-        if self.is_speaking:
-            # More permissive when already speaking
-            self.is_speaking = (
-                self.speech_count > 0 or                     # Still detecting speech
-                now - self.last_speech_time < 0.3 or        # Brief pause
-                sum(self.detection_history) >= 2            # Recent speech activity
-            )
-        else:
-            # Stricter to start speaking
-            self.is_speaking = (
-                self.speech_count >= 2 or                    # Multiple speech frames
-                (strong_speech and sum(self.detection_history) >= 1)  # Strong speech with history
-            )
+            # Slow release (100ms)
+            release_time = 0.100
+            alpha = 1.0 - np.exp(-dt / release_time)
+            self.speech_count = max(0.0, self.speech_count - alpha)
+            
+        # Simple state tracking
+        self.is_speaking = self.speech_count > 0.6  # Slight bias towards closed
         
         # Update timing
         if is_speech or self.is_speaking:
@@ -195,7 +214,7 @@ class AudioProcessor:
             'audio': emphasized,
             'is_speech': self.is_speaking,
             'db_level': self.rms_level,
-            'noise_floor': self.noise_floor,
+            'noise_floor': self.floor_slow,
             'speech_ratio': speech_ratio,
             'zero_crossings': zero_crossings
         }
@@ -207,16 +226,12 @@ class AudioProcessor:
             
         transcript = transcript.strip().lower()
         
-        # Skip common filler phrases and short responses
-        skip_phrases = {
-            "thank you", "thanks", "thank", "okay", "ok", 
-            "mm", "hmm", "uh", "um", "ah", "oh", "i", "a",
-            "yes", "no", "yeah", "nah", "right", "sure",
-            "mhm", "uh-huh", "nope", "me", "and", "the"
-        }
-        
-        # Skip if it's a filler phrase
-        if transcript in skip_phrases:
+        # Skip "Thank you." response (case insensitive)
+        if transcript == "thank you.":
+            return False
+            
+        # Skip empty or single character transcripts
+        if len(transcript.strip()) <= 1:
             return False
             
         # Skip if it's a repeat of recent transcript
@@ -285,12 +300,14 @@ async def transcribe_audio(websocket):
                             transcript = asr_result["text"].strip()
                             confidence = asr_result.get("confidence", 0.0)
                             
-                            # Apply sophisticated transcript filtering
+                            # Skip "Thank you." completely
+                            if transcript.lower() == "thank you.":
+                                continue
+                                
+                            # Show transcript and send if valid
+                            print(f"- Transcript: '{transcript}'")
                             if processor.should_process_transcript(transcript, confidence):
-                                print(f"- Transcript: '{transcript}' (conf: {confidence:.2f})")
                                 await websocket.send(transcript)
-                            else:
-                                print(f"- Filtered: '{transcript}' (conf: {confidence:.2f})")
                         else:
                             # Simple status indicator for non-speech
                             if current_size >= MAX_CHUNK_SIZE:
