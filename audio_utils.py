@@ -35,29 +35,6 @@ def find_input_device(p):
     if system == 'linux':
         warnings.filterwarnings("ignore", category=RuntimeWarning, module="sounddevice")
 
-    # Print detailed device information for debugging
-    print("\nAvailable audio devices (detailed):")
-    print("=" * 80)
-    for i in range(p.get_device_count()):
-        try:
-            device_info = p.get_device_info_by_index(i)
-            print(f"\nDevice {i}: {device_info['name']}")
-            print(f"  Index: {device_info['index']}")
-            print(f"  Input channels: {device_info['maxInputChannels']}")
-            print(f"  Output channels: {device_info['maxOutputChannels']}")
-            print(f"  Default sample rate: {device_info['defaultSampleRate']}")
-            print(f"  Default input: {p.get_default_input_device_info()['index'] == device_info['index']}")
-            print(f"  Host API: {p.get_host_api_info_by_index(device_info['hostApi'])['name']}")
-            
-            if device_info['maxInputChannels'] > 0:
-                print("  Supported sample rates:")
-                for rate in [16000, 22050, 32000, 44100, 48000]:
-                    supported = is_rate_supported(p, device_info, rate)
-                    print(f"    {rate} Hz: {'Yes' if supported else 'No'}")
-            print("-" * 40)
-        except OSError:
-            print(f"Device {i}: <error accessing device>")
-
     # First try to find built-in microphone based on system
     for i in range(p.get_device_count()):
         try:

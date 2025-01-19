@@ -11,7 +11,7 @@ class VolumeWindow(QWidget):
             
             # Initialize volume tracking
             self.last_volume = 0.0
-            self.smoothing_factor = 0.3  # Lower = smoother transitions
+            self.smoothing_factor = 0.4  # Increased for faster response while maintaining stability
             self.setAttribute(Qt.WA_DeleteOnClose)  # Ensure proper cleanup
             self.setWindowTitle("Microphone Volume")
             self.setFixedSize(300, 200)
