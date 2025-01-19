@@ -29,7 +29,7 @@ import platform
 from collections import deque
 
 from volume_window import VolumeWindow
-from audio_utils import init_audio, CHUNK, FORMAT
+from audio_core import AudioCore
 
 # Server configuration
 SERVER_URI = "ws://10.5.2.10:8765"  # Or ws://<server-ip>:8765 if remote
@@ -51,13 +51,14 @@ async def record_and_send_audio(websocket, volume_window):
     while retry_count < max_retries:
         last_print_time = 0  # For throttling debug output
         try:
-            p, device_info, rate, needs_resampling = init_audio()
+            audio_core = AudioCore()
+            p, device_info, rate, needs_resampling = audio_core.init_audio_device()
             
             try:
                 # Configure stream with optimal Linux ALSA settings
-                buffer_size = CHUNK * 4  # Larger buffer for stability
+                buffer_size = audio_core.CHUNK * 4  # Larger buffer for stability
                 stream = p.open(
-                    format=FORMAT,
+                    format=audio_core.FORMAT,
                     channels=1,
                     rate=rate,
                     input=True,
@@ -76,12 +77,12 @@ async def record_and_send_audio(websocket, volume_window):
                 
                 # Try alternative configuration with default ALSA buffer size
                 stream = p.open(
-                    format=FORMAT,
+                    format=audio_core.FORMAT,
                     channels=1,
                     rate=rate,
                     input=True,
                     input_device_index=device_info['index'],
-                    frames_per_buffer=CHUNK,  # Use default chunk size
+                    frames_per_buffer=audio_core.CHUNK,  # Use default chunk size
                     start=True,
                     stream_callback=None  # Use blocking mode
                 )
@@ -104,7 +105,7 @@ async def record_and_send_audio(websocket, volume_window):
                 try:
                     # Read with larger timeout and handle overflows
                     try:
-                        data = stream.read(CHUNK, exception_on_overflow=False)
+                        data = stream.read(audio_core.CHUNK, exception_on_overflow=False)
                     except OSError as e:
                         print(f"Stream read error (trying to recover): {e}")
                         await asyncio.sleep(0.1)  # Give the stream time to recover
@@ -211,7 +212,8 @@ async def main(app):
 
     try:
         # Initialize audio
-        p, device_info, rate, needs_resampling = init_audio()
+        audio_core = AudioCore()
+        p, device_info, rate, needs_resampling = audio_core.init_audio_device()
         
         # Create volume window
         volume_window = VolumeWindow(device_info['name'])

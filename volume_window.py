@@ -1,10 +1,7 @@
 from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QProgressBar
 from PyQt5.QtCore import Qt, QTimer
 import numpy as np
-import sys
-from collections import deque
-import time
-from scipy import signal
+from audio_core import AudioCore
 
 class VolumeWindow(QWidget):
     def __init__(self, device_name=None):
@@ -12,23 +9,11 @@ class VolumeWindow(QWidget):
         try:
             super().__init__(None)  # Explicitly set no parent
             
-            # Initialize audio processing (matching server logic)
-            self.peak_level = -96.0
-            self.rms_level = -96.0
-            self.last_update = time.time()
-            self.noise_floor = -50.0
-            self.min_floor = -65.0
-            self.max_floor = -20.0
-            self.window_size = 150
-            self.recent_levels = deque(maxlen=self.window_size)
-            self.min_history = deque(maxlen=20)
-            self.speech_threshold_open = 3.0
-            self.speech_threshold_close = 2.0
-            self.is_speaking = False
-            self.hold_counter = 0
-            self.hold_samples = 10
-            self.pre_emphasis = 0.97
-            self.prev_sample = 0.0
+            # Initialize audio processing
+            self.audio_core = AudioCore()
+            self.running = True
+            self.has_gui = True
+            
             self.setAttribute(Qt.WA_DeleteOnClose)  # Ensure proper cleanup
             self.setWindowTitle("Microphone Volume")
             self.setFixedSize(300, 200)
@@ -120,10 +105,6 @@ class VolumeWindow(QWidget):
             self.repaint()
             QApplication.processEvents()
             
-            # Initialize state
-            self.running = True
-            self.has_gui = True
-            
             # Force initial update
             self.update()
             
@@ -134,99 +115,23 @@ class VolumeWindow(QWidget):
             print("Volume meter will not be displayed")
             self.running = False
             self.has_gui = False
-        
+    
     def process_audio(self, audio_data):
-        """Process audio using server's speech detection logic"""
+        """Process audio and update volume display"""
         if not self.running or not self.has_gui:
             return
             
         try:
-            # Remove DC offset
-            dc_removed = audio_data - np.mean(audio_data)
+            # Process audio using AudioCore
+            result = self.audio_core.process_audio(audio_data)
             
-            # Apply pre-emphasis filter (matching server)
-            emphasized = np.zeros_like(dc_removed)
-            emphasized[0] = dc_removed[0] - self.pre_emphasis * self.prev_sample
-            emphasized[1:] = dc_removed[1:] - self.pre_emphasis * dc_removed[:-1]
-            self.prev_sample = dc_removed[-1]
+            # Calculate volume using AudioCore's professional metering
+            volume = self.audio_core.calculate_volume(audio_data)
             
-            # Update levels with envelope following
-            now = time.time()
-            dt = now - self.last_update
-            self.last_update = now
+            # Update GUI with volume level (0-100%)
+            normalized = int(volume * 100)
+            QTimer.singleShot(0, lambda: self._update_widgets(normalized))
             
-            rms = np.sqrt(np.mean(emphasized**2))
-            db_rms = 20 * np.log10(max(rms, 1e-10))
-            
-            # Update RMS level
-            if db_rms > self.rms_level:
-                alpha = 1.0 - np.exp(-dt / 0.030)  # 30ms attack
-            else:
-                alpha = 1.0 - np.exp(-dt / 0.500)  # 500ms release
-            self.rms_level = self.rms_level + (db_rms - self.rms_level) * alpha
-            
-            # Update noise floor tracking
-            self.recent_levels.append(self.rms_level)
-            
-            if len(self.recent_levels) > 0:
-                current_min = np.percentile(self.recent_levels, 15)
-                self.min_history.append(current_min)
-                
-                weights = np.exp(-np.arange(len(self.min_history)) / 10)
-                base_floor = np.average(self.min_history, weights=weights)
-                
-                if base_floor < self.noise_floor:
-                    alpha_attack = 1.0 - np.exp(-dt / 0.100)
-                    self.noise_floor = max(
-                        self.min_floor,
-                        self.noise_floor + (base_floor - self.noise_floor) * alpha_attack
-                    )
-                else:
-                    level_diff = base_floor - self.noise_floor
-                    release_time = np.interp(level_diff, [0, 20], [2.0, 5.0])
-                    alpha_release = 1.0 - np.exp(-dt / release_time)
-                    self.noise_floor = min(
-                        self.max_floor,
-                        self.noise_floor + (base_floor - self.noise_floor) * alpha_release
-                    )
-            
-            # Spectral analysis for speech detection (matching server)
-            freqs, times, Sxx = signal.spectrogram(emphasized, fs=16000, 
-                                                 nperseg=256, noverlap=128)
-            speech_mask = (freqs >= 100) & (freqs <= 3500)
-            speech_energy = np.mean(Sxx[speech_mask, :])
-            total_energy = np.mean(Sxx)
-            speech_ratio = speech_energy / total_energy if total_energy > 0 else 0
-            
-            # Calculate zero-crossings
-            zero_crossings = np.sum(np.abs(np.diff(np.signbit(emphasized)))) / len(emphasized)
-            
-            # Speech detection with spectral analysis and hysteresis
-            has_speech_character = speech_ratio > 1.03 and zero_crossings > 0.0003
-            
-            if not self.is_speaking:
-                # Check if should open gate
-                is_speech = (self.rms_level > self.noise_floor + self.speech_threshold_open and 
-                            has_speech_character)
-                if is_speech:
-                    self.is_speaking = True
-                    self.hold_counter = self.hold_samples
-            else:
-                # Check if should close gate
-                if self.rms_level < self.noise_floor + self.speech_threshold_close:
-                    if self.hold_counter > 0:
-                        self.hold_counter -= 1
-                        is_speech = True
-                    else:
-                        self.is_speaking = False
-                        is_speech = False
-                else:
-                    self.hold_counter = self.hold_samples
-                    is_speech = True
-            
-            # Update volume display based on speech detection
-            volume = 1.0 if is_speech else 0.0
-            QTimer.singleShot(0, lambda: self._update_widgets(volume * 100))
         except Exception:
             pass  # Ignore errors if window is being destroyed
     
