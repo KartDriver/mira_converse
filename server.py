@@ -55,6 +55,12 @@ class AudioProcessor:
         self.rms_attack = 0.030    # 30ms RMS attack
         self.rms_release = 0.500   # 500ms RMS release
         
+        # Pre-roll buffer for catching speech starts
+        self.preroll_duration = 0.3  # seconds
+        self.preroll_samples = int(16000 * self.preroll_duration)  # at 16kHz
+        self.preroll_buffer = deque(maxlen=self.preroll_samples)
+        self.last_speech_end = 0  # timestamp of last speech end
+        
         # Level detection
         self.peak_level = -96.0
         self.rms_level = -96.0
@@ -89,6 +95,19 @@ class AudioProcessor:
                                         samplerate=16000, channels=1)
         return audio_data, sample_rate
     
+    def add_to_preroll(self, audio_data):
+        """Add audio to pre-roll buffer"""
+        for sample in audio_data:
+            self.preroll_buffer.append(sample)
+            
+    def get_preroll_audio(self):
+        """Get pre-roll audio if available and appropriate"""
+        now = time.time()
+        # Only use preroll if we've had sufficient silence
+        if now - self.last_speech_end > self.preroll_duration:
+            return np.array(self.preroll_buffer)
+        return np.array([])
+
     def process_audio(self, audio_data):
         """Process audio with professional techniques"""
         # Remove DC offset
@@ -235,6 +254,11 @@ class AudioProcessor:
         # Update timing
         if is_speech or self.is_speaking:
             self.last_speech_time = now
+        else:
+            self.last_speech_end = now
+            
+        # Add current audio to pre-roll buffer
+        self.add_to_preroll(emphasized)
         
         return {
             'audio': emphasized,
@@ -330,6 +354,16 @@ async def transcribe_audio(websocket):
                         
                         # Process speech if detected
                         if result['is_speech']:
+                            # Get pre-roll audio if appropriate
+                            preroll_audio = processor.get_preroll_audio()
+                            
+                            # Combine pre-roll with current audio if available
+                            if len(preroll_audio) > 0:
+                                combined_audio = np.concatenate([preroll_audio, result['audio']])
+                                print(f"Added {len(preroll_audio)/16000:.3f}s of pre-roll audio")
+                            else:
+                                combined_audio = result['audio']
+                            
                             # Log detailed analysis when speech is detected
                             print(f"\nSpeech Detected:")
                             print(f"- dB Level: {result['db_level']:.1f}")
@@ -337,8 +371,8 @@ async def transcribe_audio(websocket):
                             print(f"- Speech Ratio: {result['speech_ratio']:.3f}")
                             print(f"- Zero-crossing rate: {result['zero_crossings']:.6f}")
                             
-                            # Use processed audio for speech recognition
-                            audio_input = {"array": result['audio'], "sampling_rate": sr}
+                            # Use combined audio for speech recognition
+                            audio_input = {"array": combined_audio, "sampling_rate": sr}
                             asr_result = asr_pipeline(
                                 audio_input, 
                                 generate_kwargs={"language": "english"}, 
