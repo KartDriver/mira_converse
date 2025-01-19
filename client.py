@@ -26,10 +26,10 @@ from PyQt5.QtCore import QTimer
 import sys
 import os
 import platform
+from collections import deque
 
 from volume_window import VolumeWindow
 from audio_utils import init_audio, CHUNK, FORMAT
-from audio_calibration import AudioCalibration
 
 # Server configuration
 SERVER_URI = "ws://10.5.2.10:8765"  # Or ws://<server-ip>:8765 if remote
@@ -48,10 +48,8 @@ async def record_and_send_audio(websocket, volume_window):
     stream = None
     retry_count = 0
     max_retries = 3
-    calibration = AudioCalibration()
-    last_print_time = 0  # For throttling debug output
-
     while retry_count < max_retries:
+        last_print_time = 0  # For throttling debug output
         try:
             p, device_info, rate, needs_resampling = init_audio()
             
@@ -116,45 +114,46 @@ async def record_and_send_audio(websocket, volume_window):
                     # Convert to float and process audio
                     float_data = audio_data.astype(np.float32) / 32768.0
                     
-                    # Process audio with professional techniques and get speech detection result
-                    is_speech, processed_audio = calibration.add_sample(float_data)
-                    thresholds = calibration.get_thresholds()
-                    
-                    # Send updated thresholds to server periodically (every ~1 second)
-                    current_time = asyncio.get_event_loop().time()
-                    if not hasattr(record_and_send_audio, 'last_threshold_update'):
-                        record_and_send_audio.last_threshold_update = 0
-                    
-                    if current_time - record_and_send_audio.last_threshold_update >= 1.0:
-                        # Send open threshold as this is when we start detecting speech
-                        await websocket.send(f"SPEECH_THRESHOLD:{thresholds['speech_threshold_open']:.1f}")
-                        record_and_send_audio.last_threshold_update = current_time
-                        print(f"Floor: {thresholds['noise_floor']:.1f} dB, "
-                              f"RMS: {thresholds['rms_level']:.1f} dB, "
-                              f"Peak: {thresholds['peak_level']:.1f} dB")
-                    
-                    # Log speech detection status periodically
-                    if not hasattr(record_and_send_audio, 'last_status_time'):
-                        record_and_send_audio.last_status_time = 0
-                    
-                    if current_time - record_and_send_audio.last_status_time >= 2.0:
-                        print(f"Speech Detection - Floor: {thresholds['noise_floor']:.1f} dB, "
-                              f"Active: {is_speech}, "
-                              f"Level: {thresholds['rms_level']:.1f} dB")
-                        record_and_send_audio.last_status_time = current_time
-                    
-                    # Process audio chunks for volume meter with professional metering
+                    # Simple RMS calculation for volume meter
                     chunk_size = 256
-                    for i in range(0, len(processed_audio), chunk_size):
-                        chunk = processed_audio[i:i + chunk_size]
+                    for i in range(0, len(float_data), chunk_size):
+                        chunk = float_data[i:i + chunk_size]
                         
-                        # Calculate zero-crossings on processed audio
-                        zero_crossings = np.sum(np.abs(np.diff(np.signbit(chunk)))) / len(chunk)
+                        # Professional volume metering
+                        rms = np.sqrt(np.mean(chunk**2))
+                        db = 20 * np.log10(max(rms, 1e-10))
                         
-                        # Use professional metering for volume display
-                        volume_pct = calibration.calculate_volume(chunk)
+                        # Initialize state if needed
+                        if not hasattr(record_and_send_audio, 'state'):
+                            record_and_send_audio.state = {
+                                'min_db': -60.0,  # Initial floor
+                                'max_db': -20.0,  # Initial ceiling
+                                'floor_window': deque(maxlen=150),  # 3 seconds at 50Hz
+                                'peak_window': deque(maxlen=10)     # 200ms peak memory
+                            }
+                        
+                        state = record_and_send_audio.state
+                        state['floor_window'].append(db)
+                        state['peak_window'].append(db)
+                        
+                        # Update floor and ceiling
+                        noise_floor = max(-65.0, min(-20.0, np.percentile(state['floor_window'], 15)))
+                        peak_level = max(state['peak_window'])
+                        
+                        # Calculate volume percentage with professional scaling
+                        if db <= noise_floor:
+                            volume_pct = 0.0
+                        else:
+                            # Dynamic range compression
+                            db_range = peak_level - noise_floor
+                            if db_range < 1.0:
+                                db_range = 1.0
+                            volume_pct = min(1.0, max(0.0, (db - noise_floor) / db_range))
+                            # Apply slight compression curve
+                            volume_pct = pow(volume_pct, 0.8)
                             
                         # Print levels occasionally for debugging (every 2 seconds)
+                        current_time = asyncio.get_event_loop().time()
                         if i == 0 and current_time - last_print_time >= 2:
                             print(f"Vol: {volume_pct*100:.0f}%")
                             last_print_time = current_time
@@ -165,98 +164,25 @@ async def record_and_send_audio(websocket, volume_window):
                         # Small delay to allow GUI to update
                         await asyncio.sleep(0.001)
                     
-                    # Initialize enhanced state variables if needed
-                    if not hasattr(record_and_send_audio, 'state'):
-                        record_and_send_audio.state = {
-                            'audio_buffer': np.zeros(int(0.5 * rate), dtype=np.float32),  # 0.5s pre-speech buffer
-                            'is_speaking': False,
-                            'silence_counter': 0,
-                            'last_sent_time': 0,
-                            'continuous_buffer': [],  # Buffer for continuous speech
-                            'energy_window': np.zeros(10),  # Rolling window of audio energy
-                            'energy_index': 0,
-                            'last_energy': 0
-                        }
-                    
-                    state = record_and_send_audio.state
-                    
-                    # Speech detection and processing with enhanced logic
-                    if is_speech or state['is_speaking']:
-                        if is_speech:
-                            # Reset silence counter when active speech detected
-                            state['silence_counter'] = 0
-                            
-                            if not state['is_speaking']:
-                                # Starting to speak - include pre-speech buffer with energy-based trimming
-                                state['is_speaking'] = True
-                                pre_speech_data = processed_audio  # Use processed audio
-                                state['continuous_buffer'] = [pre_speech_data]
-                        
-                        # Always add current audio while speaking
-                        state['continuous_buffer'].append(processed_audio)
-                        
-                        # Send if we've accumulated enough audio (about 1 second)
-                        total_samples = sum(len(b) for b in state['continuous_buffer'])
-                        if total_samples >= rate:  # 1 second of audio
-                            # Combine all buffered audio
-                            combined_audio = np.concatenate(state['continuous_buffer'])
-                            
-                            if needs_resampling:
-                                try:
-                                    # Resample the combined audio
-                                    ratio = 16000 / rate
-                                    resampled_data = resampler.process(
-                                        combined_audio,
-                                        ratio,
-                                        end_of_input=False
-                                    )
-                                    final_data = np.clip(resampled_data * 32768.0, -32768, 32767).astype(np.int16)
-                                except Exception as e:
-                                    print(f"Error during resampling: {e}")
-                                    continue
-                            else:
-                                final_data = np.clip(combined_audio * 32768.0, -32768, 32767).astype(np.int16)
-                            
-                            # Send the audio
-                            await websocket.send(final_data.tobytes())
-                            
-                            # Keep only the most recent audio for the next buffer
-                            excess_samples = total_samples - rate
-                            if excess_samples > 0:
-                                last_chunk = state['continuous_buffer'][-1]
-                                state['continuous_buffer'] = [last_chunk[-excess_samples:]]
-                            else:
-                                state['continuous_buffer'] = []
+                    # Convert audio to 16-bit PCM and send
+                    if needs_resampling:
+                        try:
+                            # Resample to 16kHz
+                            ratio = 16000 / rate
+                            resampled_data = resampler.process(
+                                float_data,
+                                ratio,
+                                end_of_input=False
+                            )
+                            final_data = np.clip(resampled_data * 32768.0, -32768, 32767).astype(np.int16)
+                        except Exception as e:
+                            print(f"Error during resampling: {e}")
+                            continue
                     else:
-                        # No speech detected - increment silence counter
-                        state['silence_counter'] += 1
-                        
-                        # Dynamic silence detection based on speech duration
-                        silence_threshold = 8 if len(state['continuous_buffer']) > 20 else 4
-                        if state['silence_counter'] >= silence_threshold:
-                            if state['is_speaking']:
-                                # Send any remaining audio in the buffer
-                                if state['continuous_buffer']:
-                                    combined_audio = np.concatenate(state['continuous_buffer'])
-                                    if needs_resampling:
-                                        try:
-                                            ratio = 16000 / rate
-                                            resampled_data = resampler.process(
-                                                combined_audio,
-                                                ratio,
-                                                end_of_input=False
-                                            )
-                                            final_data = np.clip(resampled_data * 32768.0, -32768, 32767).astype(np.int16)
-                                            await websocket.send(final_data.tobytes())
-                                        except Exception as e:
-                                            print(f"Error during final resampling: {e}")
-                                    else:
-                                        final_data = np.clip(combined_audio * 32768.0, -32768, 32767).astype(np.int16)
-                                        await websocket.send(final_data.tobytes())
-                            
-                            # Reset speaking state
-                            state['is_speaking'] = False
-                            state['continuous_buffer'] = []
+                        final_data = np.clip(float_data * 32768.0, -32768, 32767).astype(np.int16)
+                    
+                    # Send the audio
+                    await websocket.send(final_data.tobytes())
                 except OSError as e:
                     print(f"Error reading from stream: {e}")
                     await asyncio.sleep(0.1)  # Brief pause before retrying
