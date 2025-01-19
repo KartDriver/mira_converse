@@ -111,60 +111,16 @@ async def record_and_send_audio(websocket, volume_window):
                         continue
                     audio_data = np.frombuffer(data, dtype=np.int16)
                     
-                    # Convert to float and process audio
+                    # Convert to float for volume window processing
                     float_data = audio_data.astype(np.float32) / 32768.0
                     
-                    # Simple RMS calculation for volume meter
-                    chunk_size = 256
-                    for i in range(0, len(float_data), chunk_size):
-                        chunk = float_data[i:i + chunk_size]
-                        
-                        # Professional volume metering
-                        rms = np.sqrt(np.mean(chunk**2))
-                        db = 20 * np.log10(max(rms, 1e-10))
-                        
-                        # Initialize state if needed
-                        if not hasattr(record_and_send_audio, 'state'):
-                            record_and_send_audio.state = {
-                                'min_db': -60.0,  # Initial floor
-                                'max_db': -20.0,  # Initial ceiling
-                                'floor_window': deque(maxlen=150),  # 3 seconds at 50Hz
-                                'peak_window': deque(maxlen=10)     # 200ms peak memory
-                            }
-                        
-                        state = record_and_send_audio.state
-                        state['floor_window'].append(db)
-                        state['peak_window'].append(db)
-                        
-                        # Update floor and ceiling
-                        noise_floor = max(-65.0, min(-20.0, np.percentile(state['floor_window'], 15)))
-                        peak_level = max(state['peak_window'])
-                        
-                        # Calculate volume percentage with professional scaling
-                        if db <= noise_floor:
-                            volume_pct = 0.0
-                        else:
-                            # Dynamic range compression
-                            db_range = peak_level - noise_floor
-                            if db_range < 1.0:
-                                db_range = 1.0
-                            volume_pct = min(1.0, max(0.0, (db - noise_floor) / db_range))
-                            # Apply slight compression curve
-                            volume_pct = pow(volume_pct, 0.8)
-                            
-                        # Print levels occasionally for debugging (every 2 seconds)
-                        current_time = asyncio.get_event_loop().time()
-                        if i == 0 and current_time - last_print_time >= 2:
-                            print(f"Vol: {volume_pct*100:.0f}%")
-                            last_print_time = current_time
-                        
-                        # Update volume window with percentage value
-                        volume_window.update_volume(volume_pct)
-                        
-                        # Small delay to allow GUI to update
-                        await asyncio.sleep(0.001)
+                    # Update volume window with audio data
+                    volume_window.process_audio(float_data)
                     
-                    # Convert audio to 16-bit PCM and send
+                    # Small delay to allow GUI to update
+                    await asyncio.sleep(0.001)
+                    
+                    # Resample if needed and send to server
                     if needs_resampling:
                         try:
                             # Resample to 16kHz
@@ -219,7 +175,7 @@ async def receive_transcripts(websocket):
     try:
         while True:
             msg = await websocket.recv()  # Wait for text message
-            print(f"Transcript: {msg}")
+            print(f"\nTranscript: {msg}")
     except websockets.ConnectionClosed:
         print("Server closed connection.")
 

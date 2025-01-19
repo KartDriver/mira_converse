@@ -383,13 +383,9 @@ async def transcribe_audio(websocket):
                             transcript = asr_result["text"].strip()
                             confidence = asr_result.get("confidence", 0.0)
                             
-                            # Skip "Thank you." completely
-                            if transcript.lower() == "thank you.":
-                                continue
-                                
-                            # Show transcript and send if valid
-                            print(f"- Transcript: '{transcript}'")
-                            if processor.should_process_transcript(transcript, confidence):
+                            # Skip "Thank you." responses
+                            if transcript.lower().strip() != "thank you.":
+                                print(f"- Transcript: '{transcript}'")
                                 await websocket.send(transcript)
                         else:
                             # Simple status indicator for non-speech
