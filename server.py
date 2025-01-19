@@ -131,17 +131,37 @@ async def handle_tts(websocket, text):
         audio = np.clip(audio, -1.0, 1.0)
         audio_int16 = (audio * 32767.0).astype(np.int16)
         
-        # Send audio in chunks
-        CHUNK_SIZE = 4096  # Send 4KB chunks
-        total_chunks = (len(audio_int16) + CHUNK_SIZE - 1) // CHUNK_SIZE
-        print(f"[TTS] Sending audio in {total_chunks} chunks of {CHUNK_SIZE} samples")
+        # Calculate chunk size based on audio frames (1 frame = 1/24000 sec)
+        FRAME_SIZE = 1024  # Process in 1024-sample frames
+        total_frames = len(audio_int16) // FRAME_SIZE
+        print(f"[TTS] Sending audio in {total_frames} frames of {FRAME_SIZE} samples")
         
-        for i in range(0, len(audio_int16), CHUNK_SIZE):
-            chunk = audio_int16[i:i + CHUNK_SIZE]
-            chunk_num = i // CHUNK_SIZE + 1
-            print(f"[TTS] Sending chunk {chunk_num}/{total_chunks} ({len(chunk)} samples)")
+        # Convert to float32 for processing
+        audio_float = audio_int16.astype(np.float32) / 32768.0
+        
+        # Add fade in/out to reduce inter-chunk discontinuities
+        fade_samples = 64  # 64 samples for fade (~2.7ms at 24kHz)
+        fade_in = np.linspace(0, 1, fade_samples).astype(np.float32)
+        fade_out = np.linspace(1, 0, fade_samples).astype(np.float32)
+        
+        # Process audio in frame-aligned chunks
+        for i in range(0, len(audio_float) - FRAME_SIZE, FRAME_SIZE):
+            chunk = audio_float[i:i + FRAME_SIZE].copy()  # Copy to avoid modifying original
+            
+            # Apply fade in/out at chunk boundaries
+            if i == 0:  # First chunk
+                chunk[:fade_samples] *= fade_in
+            if i + FRAME_SIZE >= len(audio_float) - FRAME_SIZE:  # Last chunk
+                chunk[-fade_samples:] *= fade_out
+                
+            # Convert back to int16 with proper scaling and clipping
+            chunk_int16 = np.clip(chunk * 32768.0, -32768, 32767).astype(np.int16)
+                
+            frame_num = i // FRAME_SIZE + 1
+            if frame_num % 50 == 0:  # Reduce logging frequency
+                print(f"[TTS] Sending frame {frame_num}/{total_frames}")
             # Prefix with TTS identifier
-            await websocket.send(b'TTS:' + chunk.tobytes())
+            await websocket.send(b'TTS:' + chunk_int16.tobytes())
             
         # Send end marker
         await websocket.send(b'TTS_END')
