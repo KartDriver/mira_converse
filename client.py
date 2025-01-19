@@ -34,11 +34,17 @@ from audio_core import AudioCore
 from llm_client import LLMClient
 from audio_output import AudioOutput
 
+import json
+
+# Load configuration
+with open('config.json', 'r') as f:
+    CONFIG = json.load(f)
+
 # Server configuration
 SERVER_URI = "ws://10.5.2.10:8765"  # Or ws://<server-ip>:8765 if remote
 
 # Trigger word configuration
-TRIGGER_WORD = "Veronica"
+TRIGGER_WORD = CONFIG['assistant']['name']
 
 ################################################################################
 # ASYNCHRONOUS TASKS
@@ -211,10 +217,14 @@ async def receive_transcripts(websocket):
                 print("\n[ERROR] TTS generation failed")
                 continue
             
-            # Check if trigger word is in first 3 words
-            first_three_words = [word.strip('.,!?').lower() for word in msg.split()[:3]]
-            if TRIGGER_WORD.lower() in first_three_words:
-                print(f"\n[TRIGGER DETECTED] Found '{TRIGGER_WORD}' in first 3 words: {msg}")
+            # Check if trigger word appears anywhere in the message
+            msg_lower = msg.lower()
+            trigger_pos = msg_lower.find(TRIGGER_WORD.lower())
+            
+            if trigger_pos != -1:
+                # Extract everything from the trigger word to the end
+                trigger_text = msg[trigger_pos:]
+                print(f"\n[TRIGGER DETECTED] Found trigger word: {trigger_text}")
                 
                 # Process with LLM and stream responses to TTS
                 print("\n[AI RESPONSE] ", end="", flush=True)
@@ -223,7 +233,7 @@ async def receive_transcripts(websocket):
                 audio_output.start_stream()
                 
                 # Create non-blocking task for LLM processing
-                asyncio.create_task(llm_client.process_trigger(msg, callback=handle_llm_chunk))
+                asyncio.create_task(llm_client.process_trigger(trigger_text, callback=handle_llm_chunk))
     except websockets.ConnectionClosed:
         print("Server closed connection.")
 
