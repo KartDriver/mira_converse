@@ -37,11 +37,12 @@ class AudioCore:
         self.min_history = deque(maxlen=20)  # Longer history for stability
         
         # Speech detection with hysteresis
-        self.speech_threshold_open = 3.0    # Open threshold above floor (dB)
-        self.speech_threshold_close = 2.0   # Close threshold above floor (dB)
+        self.speech_threshold_open = 2.5    # Open threshold above floor (dB)
+        self.speech_threshold_close = 1.5   # Close threshold above floor (dB)
         self.is_speaking = False
         self.hold_counter = 0
-        self.hold_samples = 10     # Hold samples at 50Hz update rate
+        self.hold_samples = 15     # Hold samples at 50Hz update rate (0.3s at 50Hz)
+        self.debug_last_state = False  # For state change logging
         
         # Pre-emphasis filter
         self.pre_emphasis = 0.97
@@ -244,7 +245,7 @@ class AudioCore:
         zero_crossings = np.sum(np.abs(np.diff(np.signbit(emphasized)))) / len(emphasized)
         
         # Speech detection with spectral analysis and hysteresis
-        has_speech_character = speech_ratio > 1.03 and zero_crossings > 0.0003
+        has_speech_character = speech_ratio > 1.02 and zero_crossings > 0.0002
         
         if not self.is_speaking:
             # Check if should open gate
@@ -265,6 +266,14 @@ class AudioCore:
             else:
                 self.hold_counter = self.hold_samples
                 is_speech = True
+
+        # Log state changes for debugging
+        if self.is_speaking != self.debug_last_state:
+            if self.is_speaking:
+                print(f"\nSpeech START - Level: {self.rms_level:.1f}dB, Floor: {self.noise_floor:.1f}dB, Ratio: {speech_ratio:.3f}")
+            else:
+                print(f"\nSpeech END - Level: {self.rms_level:.1f}dB, Floor: {self.noise_floor:.1f}dB, Ratio: {speech_ratio:.3f}")
+            self.debug_last_state = self.is_speaking
 
         return {
             'audio': emphasized,

@@ -34,6 +34,9 @@ from audio_core import AudioCore
 # Server configuration
 SERVER_URI = "ws://10.5.2.10:8765"  # Or ws://<server-ip>:8765 if remote
 
+# Trigger word configuration
+TRIGGER_WORD = "Veronica"
+
 ################################################################################
 # ASYNCHRONOUS TASKS
 ################################################################################
@@ -172,11 +175,18 @@ async def record_and_send_audio(websocket, volume_window):
 async def receive_transcripts(websocket):
     """
     Continuously receive transcripts from the server and print them in the client console.
+    Also detects if the trigger word appears in the first 3 words of the transcript.
     """
     try:
         while True:
             msg = await websocket.recv()  # Wait for text message
             print(f"\nTranscript: {msg}")
+            
+            # Check if trigger word is in first 3 words
+            # Clean words by removing punctuation and converting to lowercase
+            first_three_words = [word.strip('.,!?').lower() for word in msg.split()[:3]]
+            if TRIGGER_WORD.lower() in first_three_words:
+                print(f"\n[TRIGGER DETECTED] Found '{TRIGGER_WORD}' in first 3 words: {msg}")
     except websockets.ConnectionClosed:
         print("Server closed connection.")
 

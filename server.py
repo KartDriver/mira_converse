@@ -22,11 +22,12 @@ MODEL_PATH = "/mnt/models/openai/whisper-large-v3-turbo"
 print(f"Device set to use {device}")
 print("Loading model and processor...")
 
+# Load model and processor
 model = AutoModelForSpeechSeq2Seq.from_pretrained(
     MODEL_PATH,
     torch_dtype=torch_dtype,
     low_cpu_mem_usage=True,
-    use_safetensors=True,  # or False if you don't have safetensors
+    use_safetensors=True
 ).to(device)
 
 processor = AutoProcessor.from_pretrained(MODEL_PATH)
@@ -38,7 +39,7 @@ asr_pipeline = pipeline(
     tokenizer=processor.tokenizer,
     feature_extractor=processor.feature_extractor,
     torch_dtype=torch_dtype,
-    device=device,
+    device=device
 )
 
 ################################################################################
@@ -108,84 +109,85 @@ async def transcribe_audio(websocket):
     audio techniques, and runs speech recognition when appropriate.
     """
     print("Client connected. Ready to receive audio chunks...")
-    audio_buffer = bytearray()
     server = AudioServer()
-    
-    # Buffer settings (16-bit audio at 16kHz)
-    MIN_CHUNK_SIZE = 32000  # Minimum size to process (~1 second)
-    MAX_CHUNK_SIZE = 64000  # Maximum size to accumulate (~2 seconds)
+    audio_buffer = None
+    was_speech = False
 
     try:
         async for message in websocket:
             if isinstance(message, bytes):
-                # Append raw PCM bytes from the client
-                audio_buffer.extend(message)
-                
-                # Process if we have enough data or buffer is getting too large
-                current_size = len(audio_buffer)
-                if current_size >= MIN_CHUNK_SIZE or current_size >= MAX_CHUNK_SIZE:
-                    should_clear_buffer = True  # Default to clearing buffer
+                try:
+                    # Process each chunk individually
+                    chunk_data, sr = server.audio_core.bytes_to_float32_audio(message)
+                    result = server.audio_core.process_audio(chunk_data)
                     
-                    try:
-                        # Process audio with professional techniques
-                        audio_data, sr = server.audio_core.bytes_to_float32_audio(audio_buffer)
-                        result = server.audio_core.process_audio(audio_data)
-                        
-                        # Process speech if detected
+                    # Always update preroll buffer
+                    server.add_to_preroll(result['audio'])
+                    
+                    # Handle speech state changes
+                    if result['is_speech'] and not was_speech:
+                        # Start new speech segment
+                        preroll = server.get_preroll_audio()
+                        audio_buffer = bytearray(message)
+                        was_speech = True
+                    elif was_speech:
                         if result['is_speech']:
-                            # Get pre-roll audio if appropriate
-                            preroll_audio = server.get_preroll_audio()
-                            
-                            # Combine pre-roll with current audio if available
-                            if len(preroll_audio) > 0:
-                                combined_audio = np.concatenate([preroll_audio, result['audio']])
-                                print(f"Added {len(preroll_audio)/16000:.3f}s of pre-roll audio")
-                            else:
-                                combined_audio = result['audio']
-                            
-                            # Log detailed analysis when speech is detected
-                            print(f"\nSpeech Detected:")
-                            print(f"- dB Level: {result['db_level']:.1f}")
-                            print(f"- Noise Floor: {result['noise_floor']:.1f}")
-                            print(f"- Speech Ratio: {result['speech_ratio']:.3f}")
-                            print(f"- Zero-crossing rate: {result['zero_crossings']:.6f}")
-                            
-                            # Use combined audio for speech recognition
-                            audio_input = {"array": combined_audio, "sampling_rate": sr}
-                            asr_result = asr_pipeline(
-                                audio_input, 
-                                generate_kwargs={"language": "english", "condition_on_prev_tokens": True}, 
-                                return_timestamps=True
-                            )
-                            
-                            # Get transcript and confidence
-                            transcript = asr_result["text"].strip()
-                            confidence = asr_result.get("confidence", 0.0)
-                            
-                            # Skip "Thank you." responses
-                            if transcript.lower().strip() != "thank you.":
-                                print(f"- Transcript: '{transcript}'")
-                                await websocket.send(transcript)
+                            # Continue collecting speech
+                            audio_buffer.extend(message)
                         else:
-                            # Simple status indicator for non-speech
-                            if current_size >= MAX_CHUNK_SIZE:
-                                print(".", end="", flush=True)  # Progress indicator
-                            # Only clear if we've accumulated too much data
-                            should_clear_buffer = current_size >= MAX_CHUNK_SIZE
+                            # Speech ended - wait a short moment to ensure we have the complete phrase
+                            await asyncio.sleep(0.1)  # 100ms delay
                             
-                    except Exception as e:
-                        print(f"Error processing audio: {e}")
-                        should_clear_buffer = True  # Clear buffer on error
+                            # Final check of the chunk to confirm speech has ended
+                            final_check, _ = server.audio_core.bytes_to_float32_audio(message)
+                            final_result = server.audio_core.process_audio(final_check)
+                            
+                            if not final_result['is_speech']:
+                                if audio_buffer:
+                                    # Convert buffer to audio
+                                    audio_data, sr = server.audio_core.bytes_to_float32_audio(audio_buffer)
+                                    
+                                    # Add preroll if available
+                                    preroll = server.get_preroll_audio()
+                                    if len(preroll) > 0:
+                                        audio_data = np.concatenate([preroll, audio_data])
+                                    
+                                    # Run speech recognition
+                                    asr_result = asr_pipeline(
+                                        {"array": audio_data, "sampling_rate": sr},
+                                        return_timestamps=True,
+                                        generate_kwargs={
+                                            "task": "transcribe",
+                                            "language": "english",
+                                            "use_cache": False
+                                        }
+                                    )
+                                    
+                                    # Update last speech end time for preroll management
+                                    server.last_speech_end = time.time()
+                                    
+                                    # Get transcript and confidence
+                                    transcript = asr_result["text"].strip()
+                                    confidence = asr_result.get("confidence", 0.0)
+                                    
+                                    # Skip "Thank you." responses
+                                    if transcript.lower().strip() != "thank you.":
+                                        print(f"- Transcript: '{transcript}'")
+                                        await websocket.send(transcript)
+                            
+                            # Reset for next speech segment
+                            audio_buffer = None
+                            was_speech = False
                     
-                    # Clear buffer if needed
-                    if should_clear_buffer:
-                        audio_buffer.clear()
-                        if result['is_speech']:  # Only print buffer clear during speech
-                            print("\nBuffer cleared")
+                except Exception as e:
+                    print(f"Error processing audio: {e}")
+                    audio_buffer = bytearray()
+                    was_speech = False
 
             elif isinstance(message, str):
                 if message.strip() == "RESET":
-                    audio_buffer.clear()
+                    audio_buffer = bytearray()
+                    was_speech = False
                     print("Buffer has been reset by client request.")
                 elif message.strip() == "EXIT":
                     print("Client requested exit. Closing connection.")
