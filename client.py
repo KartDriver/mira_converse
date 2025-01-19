@@ -30,6 +30,7 @@ from collections import deque
 
 from volume_window import VolumeWindow
 from audio_core import AudioCore
+from llm_client import LLMClient
 
 # Server configuration
 SERVER_URI = "ws://10.5.2.10:8765"  # Or ws://<server-ip>:8765 if remote
@@ -176,8 +177,10 @@ async def receive_transcripts(websocket):
     """
     Continuously receive transcripts from the server and print them in the client console.
     Also detects if the trigger word appears in the first 3 words of the transcript.
+    When triggered, sends the transcript to the LLM for processing.
     """
     try:
+        llm_client = LLMClient()
         while True:
             msg = await websocket.recv()  # Wait for text message
             print(f"\nTranscript: {msg}")
@@ -187,6 +190,12 @@ async def receive_transcripts(websocket):
             first_three_words = [word.strip('.,!?').lower() for word in msg.split()[:3]]
             if TRIGGER_WORD.lower() in first_three_words:
                 print(f"\n[TRIGGER DETECTED] Found '{TRIGGER_WORD}' in first 3 words: {msg}")
+                
+                # Process with LLM - response will be streamed in real-time
+                print("\n[AI RESPONSE] ", end="", flush=True)
+                response = await llm_client.process_trigger(msg)
+                if not response:
+                    print("\n[ERROR] Failed to get AI response")
     except websockets.ConnectionClosed:
         print("Server closed connection.")
 
