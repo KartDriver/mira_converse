@@ -60,16 +60,20 @@ class AudioProcessor:
         self.rms_level = -96.0
         self.last_update = time.time()
         
-        # Noise floor tracking
+        # Advanced noise floor tracking from audio_calibration.py
         self.noise_floor = -50.0
         self.min_floor = -65.0
         self.max_floor = -20.0
-        self.floor_window = deque(maxlen=150)  # 3 seconds at 50Hz
+        self.window_size = 150    # 3 seconds at 50Hz updates
+        self.recent_levels = deque(maxlen=self.window_size)
+        self.min_history = deque(maxlen=20)  # Longer history for stability
         
-        # Speech detection
+        # Speech detection with improved hysteresis
+        self.speech_threshold_open = 3.0    # Open threshold above floor (dB)
+        self.speech_threshold_close = 2.0   # Close threshold above floor (dB)
         self.is_speaking = False
-        self.speech_hold_time = 0.5  # seconds
-        self.last_speech_time = 0
+        self.hold_counter = 0
+        self.hold_samples = 10     # Hold samples at 50Hz update rate
         self.pre_emphasis = 0.97
         self.prev_sample = 0.0
         
@@ -148,46 +152,68 @@ class AudioProcessor:
         if not hasattr(self, 'floor_slow'):
             self.floor_slow = self.rms_level
             
-        # Simple professional noise floor tracking
-        if self.rms_level < self.floor_slow:
-            # Fast attack for quieter levels (100ms)
-            alpha = 1.0 - np.exp(-dt / 0.1)
-        else:
-            # Very slow release (5 seconds) - never chase peaks
-            alpha = 1.0 - np.exp(-dt / 5.0)
+        # Advanced noise floor tracking from audio_calibration.py
+        self.recent_levels.append(self.rms_level)
+        
+        # Get current minimum level estimate (15th percentile for better sensitivity)
+        if len(self.recent_levels) > 0:
+            current_min = np.percentile(self.recent_levels, 15)
+            self.min_history.append(current_min)
             
-        # Update floor with limits
-        self.floor_slow = max(
-            self.min_floor,
-            min(self.max_floor,
-                self.floor_slow + (self.rms_level - self.floor_slow) * alpha
-            )
-        )
+            # Use weighted average of recent minimums for base floor
+            weights = np.exp(-np.arange(len(self.min_history)) / 10)
+            base_floor = np.average(self.min_history, weights=weights)
+            
+            # Professional envelope following for noise floor
+            if base_floor < self.noise_floor:
+                # Fast attack with smoothing
+                alpha_attack = 1.0 - np.exp(-dt / 0.100)  # 100ms attack
+                self.noise_floor = max(
+                    self.min_floor,
+                    self.noise_floor + (base_floor - self.noise_floor) * alpha_attack
+                )
+            else:
+                # Slow release with adaptive time constant
+                level_diff = base_floor - self.noise_floor
+                release_time = np.interp(level_diff, [0, 20], [2.0, 5.0])
+                alpha_release = 1.0 - np.exp(-dt / release_time)
+                self.noise_floor = min(
+                    self.max_floor,
+                    self.noise_floor + (base_floor - self.noise_floor) * alpha_release
+                )
         
         # Initialize detection history if needed
         if not hasattr(self, 'detection_history'):
             self.detection_history = deque([False] * 5, maxlen=5)  # Last 5 frames
             self.speech_count = 0  # Count of consecutive speech frames
         
-        # Classic noise gate with typical speech thresholds
-        OPEN_THRESHOLD = -45.0   # Open at -45 dB (normal speech)
-        CLOSE_THRESHOLD = -48.0  # Close at -48 dB (3dB hysteresis)
+        # Improved speech detection with spectral analysis and hysteresis
+        has_speech_character = speech_ratio > 1.03 and zero_crossings > 0.0003
         
-        # Basic speech validation (just check for speech-like spectrum)
-        has_speech_character = speech_ratio > 1.03  # More permissive
-        
-        # Simple threshold detection with hysteresis
         if not self.is_speaking:
-            # Need to exceed open threshold to start
-            is_speech = self.rms_level > OPEN_THRESHOLD and has_speech_character
+            # Check if should open gate
+            is_speech = (self.rms_level > self.noise_floor + self.speech_threshold_open and 
+                        has_speech_character)
+            if is_speech:
+                self.is_speaking = True
+                self.hold_counter = self.hold_samples
         else:
-            # Can stay open until hitting close threshold
-            is_speech = self.rms_level > CLOSE_THRESHOLD
+            # Check if should close gate
+            if self.rms_level < self.noise_floor + self.speech_threshold_close:
+                if self.hold_counter > 0:
+                    self.hold_counter -= 1
+                    is_speech = True
+                else:
+                    self.is_speaking = False
+                    is_speech = False
+            else:
+                self.hold_counter = self.hold_samples
+                is_speech = True
         
         # Debug output (focused on decision factors)
-        if self.rms_level > CLOSE_THRESHOLD - 6:  # Show when getting close
+        if self.rms_level > self.noise_floor + self.speech_threshold_close - 6:  # Show when getting close
             print(f"Gate Check: Level={self.rms_level:.1f}dB "
-                  f"Thresh={OPEN_THRESHOLD if not self.is_speaking else CLOSE_THRESHOLD:.1f}dB "
+                  f"Thresh={self.noise_floor + (self.speech_threshold_open if not self.is_speaking else self.speech_threshold_close):.1f}dB "
                   f"Speech={has_speech_character} "
                   f"-> {is_speech}")
         
@@ -214,11 +240,34 @@ class AudioProcessor:
             'audio': emphasized,
             'is_speech': self.is_speaking,
             'db_level': self.rms_level,
-            'noise_floor': self.floor_slow,
+            'noise_floor': self.noise_floor,
             'speech_ratio': speech_ratio,
             'zero_crossings': zero_crossings
         }
     
+    def calculate_volume(self, audio_data):
+        """Calculate volume using professional audio metering"""
+        if self.rms_level > self.noise_floor:
+            # Professional audio compression curve
+            db_above_floor = self.rms_level - self.noise_floor
+            ratio = 0.8  # Subtle compression ratio
+            knee = 6.0   # Soft knee width in dB
+            
+            # Soft knee compression
+            if db_above_floor < -knee/2:
+                gain = db_above_floor
+            elif db_above_floor > knee/2:
+                gain = -knee/2 + (db_above_floor - (-knee/2)) / ratio
+            else:
+                # Smooth transition in knee region
+                gain = db_above_floor + ((1/ratio - 1) * 
+                       (db_above_floor + knee/2)**2 / (2*knee))
+            
+            # Convert to linear scale with proper normalization
+            volume = np.power(10, gain/20) / np.power(10, (self.max_floor - self.noise_floor)/20)
+            return max(0.05, min(1.0, volume))
+        return 0.0
+
     def should_process_transcript(self, transcript, confidence):
         """Determine if transcript should be processed based on sophisticated rules"""
         if not transcript or confidence < 0.4:
