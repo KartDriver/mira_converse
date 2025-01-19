@@ -77,7 +77,7 @@ class AudioProcessor:
         # Speech detection with improved hysteresis
         self.speech_threshold_open = 3.0    # Open threshold above floor (dB)
         self.speech_threshold_close = 2.0   # Close threshold above floor (dB)
-        self.is_speaking = False
+        self.is_speaking = True
         self.hold_counter = 0
         self.hold_samples = 10     # Hold samples at 50Hz update rate
         self.pre_emphasis = 0.97
@@ -375,7 +375,7 @@ async def transcribe_audio(websocket):
                             audio_input = {"array": combined_audio, "sampling_rate": sr}
                             asr_result = asr_pipeline(
                                 audio_input, 
-                                generate_kwargs={"language": "english"}, 
+                                generate_kwargs={"language": "english", "condition_on_prev_tokens": True}, 
                                 return_timestamps=True
                             )
                             
