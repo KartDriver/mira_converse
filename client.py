@@ -186,43 +186,44 @@ async def receive_transcripts(websocket):
     try:
         llm_client = LLMClient()
         audio_output = AudioOutput()
+        # Initialize audio output immediately
+        audio_output.initialize()
+        
+        # Define callback for LLM to send TTS requests
+        async def handle_llm_chunk(text):
+            await websocket.send(f"TTS:{text}")
         
         while True:
-            msg = await websocket.recv()  # Wait for message
+            msg = await websocket.recv()
             
-            # Handle TTS audio chunks
             if isinstance(msg, bytes):
                 if msg.startswith(b'TTS:'):
-                    # Start audio stream if not started
-                    audio_output.start_stream()
-                    # Play the audio chunk (removing TTS: prefix)
-                    audio_output.play_chunk(msg[4:])
+                    # Queue audio chunk immediately for playback
+                    audio_output.play_chunk(msg)
                 elif msg == b'TTS_END':
-                    # Pause the audio stream
-                    audio_output.pause()
+                    pass
                 continue
-                
+            
             # Handle text messages
             print(f"\nTranscript: {msg}")
             
             if msg == "TTS_ERROR":
                 print("\n[ERROR] TTS generation failed")
                 continue
-                
+            
             # Check if trigger word is in first 3 words
-            # Clean words by removing punctuation and converting to lowercase
             first_three_words = [word.strip('.,!?').lower() for word in msg.split()[:3]]
             if TRIGGER_WORD.lower() in first_three_words:
                 print(f"\n[TRIGGER DETECTED] Found '{TRIGGER_WORD}' in first 3 words: {msg}")
                 
-                # Process with LLM - response will be streamed in real-time
+                # Process with LLM and stream responses to TTS
                 print("\n[AI RESPONSE] ", end="", flush=True)
-                response = await llm_client.process_trigger(msg)
-                if response:
-                    # Send response to TTS
-                    await websocket.send(f"TTS:{response}")
-                else:
-                    print("\n[ERROR] Failed to get AI response")
+                
+                # Start audio stream before processing to ensure it's ready
+                audio_output.start_stream()
+                
+                # Create non-blocking task for LLM processing
+                asyncio.create_task(llm_client.process_trigger(msg, callback=handle_llm_chunk))
     except websockets.ConnectionClosed:
         print("Server closed connection.")
 

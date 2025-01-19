@@ -119,53 +119,76 @@ class AudioServer:
 # WEBSOCKET HANDLER
 ################################################################################
 
+async def process_audio_chunk(websocket, chunk, fade_in=None, fade_out=None, fade_samples=32):
+    """Process and send a single audio chunk"""
+    try:
+        # Apply fades if provided
+        if fade_in is not None:
+            chunk[:fade_samples] *= fade_in
+        if fade_out is not None:
+            chunk[-fade_samples:] *= fade_out
+            
+        # Convert to int16 and send
+        chunk_int16 = np.clip(chunk * 32768.0, -32768, 32767).astype(np.int16)
+        await websocket.send(b'TTS:' + chunk_int16.tobytes())
+    except Exception as e:
+        print(f"Error processing audio chunk: {e}")
+
 async def handle_tts(websocket, text):
     """Handle text-to-speech request and stream audio back to client"""
     try:
-        print(f"\n[TTS] Generating audio for text: {text[:50]}...")
-        # Generate audio using Kokoro
-        audio, _ = generate(tts_model, text, tts_voicepack, lang=VOICE_NAME[0])
-        print(f"[TTS] Generated {len(audio)} samples at 24kHz ({len(audio)/24000:.2f} seconds)")
+        # Start TTS generation immediately
+        print(f"\n[TTS] Generating audio for text chunk: {text[:50]}...")
         
-        # Convert float audio directly to int16 PCM
-        audio = np.clip(audio, -1.0, 1.0)
-        audio_int16 = (audio * 32767.0).astype(np.int16)
+        # Create a task for TTS generation
+        loop = asyncio.get_event_loop()
+        audio_future = loop.run_in_executor(
+            None, 
+            lambda: generate(tts_model, text, tts_voicepack, lang=VOICE_NAME[0])
+        )
         
-        # Calculate chunk size based on audio frames (1 frame = 1/24000 sec)
-        FRAME_SIZE = 1024  # Process in 1024-sample frames
-        total_frames = len(audio_int16) // FRAME_SIZE
-        print(f"[TTS] Sending audio in {total_frames} frames of {FRAME_SIZE} samples")
-        
-        # Convert to float32 for processing
-        audio_float = audio_int16.astype(np.float32) / 32768.0
-        
-        # Add fade in/out to reduce inter-chunk discontinuities
-        fade_samples = 64  # 64 samples for fade (~2.7ms at 24kHz)
+        # While waiting for TTS generation, prepare processing parameters
+        FRAME_SIZE = 512  # Smaller frames for faster initial playback
+        fade_samples = 32  # Smaller fade for reduced latency
         fade_in = np.linspace(0, 1, fade_samples).astype(np.float32)
         fade_out = np.linspace(1, 0, fade_samples).astype(np.float32)
         
-        # Process audio in frame-aligned chunks
-        for i in range(0, len(audio_float) - FRAME_SIZE, FRAME_SIZE):
-            chunk = audio_float[i:i + FRAME_SIZE].copy()  # Copy to avoid modifying original
+        # Wait for TTS generation to complete
+        audio, _ = await audio_future
+        print(f"[TTS] Generated {len(audio)} samples at 24kHz ({len(audio)/24000:.2f} seconds)")
+        
+        # Convert float audio directly to float32 for processing
+        audio = np.clip(audio, -1.0, 1.0).astype(np.float32)
+        
+        # Process chunks concurrently
+        tasks = []
+        
+        # Send initial chunk with fade in
+        if len(audio) >= FRAME_SIZE:
+            first_chunk = audio[:FRAME_SIZE].copy()
+            tasks.append(process_audio_chunk(websocket, first_chunk, fade_in=fade_in))
+        
+        # Process remaining chunks
+        for i in range(FRAME_SIZE, len(audio) - FRAME_SIZE, FRAME_SIZE):
+            chunk = audio[i:i + FRAME_SIZE].copy()
             
-            # Apply fade in/out at chunk boundaries
-            if i == 0:  # First chunk
-                chunk[:fade_samples] *= fade_in
-            if i + FRAME_SIZE >= len(audio_float) - FRAME_SIZE:  # Last chunk
-                chunk[-fade_samples:] *= fade_out
-                
-            # Convert back to int16 with proper scaling and clipping
-            chunk_int16 = np.clip(chunk * 32768.0, -32768, 32767).astype(np.int16)
-                
-            frame_num = i // FRAME_SIZE + 1
-            if frame_num % 50 == 0:  # Reduce logging frequency
-                print(f"[TTS] Sending frame {frame_num}/{total_frames}")
-            # Prefix with TTS identifier
-            await websocket.send(b'TTS:' + chunk_int16.tobytes())
+            # Add fade out to final chunk
+            if i + FRAME_SIZE >= len(audio) - FRAME_SIZE:
+                tasks.append(process_audio_chunk(websocket, chunk, fade_out=fade_out))
+            else:
+                tasks.append(process_audio_chunk(websocket, chunk))
             
-        # Send end marker
+            # Process chunks in batches to maintain order while allowing concurrency
+            if len(tasks) >= 8:
+                await asyncio.gather(*tasks)
+                tasks = []
+        
+        # Process any remaining chunks
+        if tasks:
+            await asyncio.gather(*tasks)
+            
+        # Send chunk end marker
         await websocket.send(b'TTS_END')
-        print("[TTS] Finished sending audio")
         
     except Exception as e:
         print(f"TTS Error: {e}")
@@ -261,10 +284,11 @@ async def transcribe_audio(websocket):
                     print("Client requested exit. Closing connection.")
                     break
                 elif message.startswith("TTS:"):
-                    # Handle TTS request
+                    # Handle TTS request asynchronously
                     text = message[4:].strip()  # Remove TTS: prefix
                     print(f"TTS Request: {text}")
-                    await handle_tts(websocket, text)
+                    # Create task for TTS processing to run concurrently
+                    asyncio.create_task(handle_tts(websocket, text))
                 else:
                     print(f"Received unknown text message: {message}")
 

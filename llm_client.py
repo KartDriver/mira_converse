@@ -5,8 +5,9 @@ LLM Client for handling interactions with vLLM server using OpenAI-compatible AP
 
 import json
 import os
+import asyncio
 from openai import AsyncOpenAI
-from typing import Optional
+from typing import Optional, List
 
 class LLMClient:
     """Client for interacting with vLLM server using OpenAI-compatible API."""
@@ -27,22 +28,23 @@ class LLMClient:
         with open(config_path, 'r') as f:
             return json.load(f)
     
-    async def process_trigger(self, transcript: str) -> Optional[str]:
+    async def process_trigger(self, transcript: str, callback=None):
         """
         Process a triggered transcript with the LLM.
         
         Args:
             transcript: The transcript text to process
+            callback: Optional callback function to handle streaming chunks
             
         Returns:
-            The LLM's response text, or None if there was an error
+            None, as responses are handled through the callback
         """
         try:
             # Create chat completion request with streaming
             stream = await self.client.chat.completions.create(
                 model=self.config["llm"]["model_path"],
                 messages=[
-                    {"role": "system", "content": "You are a helpful AI assistant named Veronica. Respond naturally to user queries."},
+                    {"role": "system", "content": "You are Veronica, a helpful AI assistant who communicates through voice. Important instructions for your responses: 1) Provide only plain text that will be converted to speech - never use markdown, code blocks, or special formatting. 2) Use natural, conversational language as if you're speaking to someone. 3) Never use bullet points, numbered lists, or special characters. 4) Keep responses concise and clear since they will be spoken aloud. 5) Express lists or multiple points in a natural spoken way using words like 'first', 'also', 'finally', etc. 6) Use punctuation only for natural speech pauses (periods, commas, question marks)."},
                     {"role": "user", "content": transcript}
                 ],
                 temperature=0.7,
@@ -51,18 +53,35 @@ class LLMClient:
             )
             
             # Stream the response
-            collected_messages = []
+            buffer = ""
             async for chunk in stream:
                 if chunk.choices[0].delta.content is not None:
                     content = chunk.choices[0].delta.content
                     print(content, end="", flush=True)
-                    collected_messages.append(content)
+                    buffer += content
+                    
+                    # Send complete sentences to TTS as they arrive
+                    while '.' in buffer or '!' in buffer or '?' in buffer:
+                        # Find the last sentence boundary
+                        last_period = max(buffer.rfind('.'), buffer.rfind('!'), buffer.rfind('?'))
+                        if last_period == -1:
+                            break
+                            
+                        # Extract the complete sentence(s)
+                        sentence = buffer[:last_period + 1].strip()
+                        if sentence and callback:
+                            # Create non-blocking TTS task
+                            asyncio.create_task(callback(sentence))
+                            
+                        # Keep the remainder in the buffer
+                        buffer = buffer[last_period + 1:].strip()
             
+            # Send any remaining text without waiting
+            if buffer.strip() and callback:
+                asyncio.create_task(callback(buffer.strip()))
+                
             # Print newline after response
             print()
-            
-            # Return the complete message
-            return "".join(collected_messages)
             
         except Exception as e:
             print(f"Error processing LLM request: {e}")
