@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
 LLM Client for handling interactions with vLLM server using OpenAI-compatible API.
+Maintains conversation context with automatic timeout and manual reset capabilities.
 """
 
 import json
 import os
 import asyncio
+import time
 from openai import AsyncOpenAI
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 class LLMClient:
     """Client for interacting with vLLM server using OpenAI-compatible API."""
@@ -19,6 +21,10 @@ class LLMClient:
             base_url=self.config["llm"]["api_base"],
             api_key="not-needed"  # vLLM doesn't require API key
         )
+        # Initialize conversation history
+        self.conversation_history: List[Dict[str, str]] = []
+        self.last_message_time: float = 0
+        self.context_timeout: float = 180  # 3 minutes in seconds
         
     def _load_config(self, config_path: str) -> dict:
         """Load configuration from JSON file."""
@@ -28,6 +34,18 @@ class LLMClient:
         with open(config_path, 'r') as f:
             return json.load(f)
     
+    def _check_context_timeout(self) -> bool:
+        """Check if the conversation context has timed out (more than 3 minutes since last message)."""
+        if not self.last_message_time:
+            return False
+        return (time.time() - self.last_message_time) > self.context_timeout
+
+    def reset_context(self):
+        """Manually reset the conversation context."""
+        self.conversation_history = []
+        self.last_message_time = 0
+        print("\n[Context Reset] Conversation history cleared.")
+
     async def process_trigger(self, transcript: str, callback=None):
         """
         Process a triggered transcript with the LLM.
@@ -40,28 +58,57 @@ class LLMClient:
             None, as responses are handled through the callback
         """
         try:
-            # Create chat completion request with streaming
+            # Check for manual reset trigger
+            if "reset context" in transcript.lower():
+                self.reset_context()
+                if callback:
+                    await callback("Context has been reset. How can I help you?")
+                return
+
+            # Check for timeout and reset if needed
+            if self._check_context_timeout():
+                self.reset_context()
+                print("\n[Context Timeout] Conversation history cleared due to inactivity.")
+
+            # Update last message time
+            self.last_message_time = time.time()
+
             # Create system prompt with assistant name from config
             system_prompt = f"You are {self.config['assistant']['name']}, a helpful AI assistant who communicates through voice. Important instructions for your responses: 1) Provide only plain text that will be converted to speech - never use markdown, code blocks, or special formatting. 2) Use natural, conversational language as if you're speaking to someone. 3) Never use bullet points, numbered lists, or special characters. 4) Keep responses concise and clear since they will be spoken aloud. 5) Express lists or multiple points in a natural spoken way using words like 'first', 'also', 'finally', etc. 6) Use punctuation only for natural speech pauses (periods, commas, question marks)."
-            
+
+            # Prepare messages with conversation history
+            messages = [{"role": "system", "content": system_prompt}]
+            messages.extend(self.conversation_history)
+            messages.append({"role": "user", "content": transcript})
+
+            # Log full context for debugging
+            print("\n[Context Debug] Full conversation context being sent to server:")
+            for idx, msg in enumerate(messages):
+                print(f"\n{idx}. Role: {msg['role']}")
+                print(f"   Content: {msg['content']}")
+            print("\n[End Context Debug]")
+
+            # Create chat completion request with streaming
             stream = await self.client.chat.completions.create(
                 model=self.config["llm"]["model_path"],
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": transcript}
-                ],
+                messages=messages,
                 temperature=0.7,
                 max_tokens=1024,  # Increased from 150 to allow longer responses
                 stream=True
             )
             
-            # Stream the response
+            # Store the user's message in history before making the request
+            self.conversation_history.append({"role": "user", "content": transcript})
+            
+            # Stream the response while collecting it
             buffer = ""
+            full_response = ""
             async for chunk in stream:
                 if chunk.choices[0].delta.content is not None:
                     content = chunk.choices[0].delta.content
                     print(content, end="", flush=True)
                     buffer += content
+                    full_response += content
                     
                     # Send complete sentences to TTS as they arrive
                     while '.' in buffer or '!' in buffer or '?' in buffer:
@@ -83,6 +130,13 @@ class LLMClient:
             if buffer.strip() and callback:
                 asyncio.create_task(callback(buffer.strip()))
                 
+            # Store the assistant's response in history
+            self.conversation_history.append({"role": "assistant", "content": full_response})
+
+            # Limit conversation history to last 10 messages (5 exchanges)
+            if len(self.conversation_history) > 10:
+                self.conversation_history = self.conversation_history[-10:]
+
             # Print newline after response
             print()
             
