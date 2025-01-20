@@ -67,36 +67,65 @@ async def record_and_send_audio(websocket, volume_window):
             p, device_info, rate, needs_resampling = audio_core.init_audio_device()
             
             try:
-                # Configure stream with optimal Linux ALSA settings
-                buffer_size = audio_core.CHUNK * 4  # Larger buffer for stability
-                stream = p.open(
-                    format=audio_core.FORMAT,
-                    channels=1,
-                    rate=rate,
-                    input=True,
-                    input_device_index=device_info['index'],
-                    frames_per_buffer=buffer_size,
-                    start=False,  # Don't start yet
-                    stream_callback=None,  # Use blocking mode for better stability
-                    input_host_api_specific_stream_info=None  # Let ALSA handle defaults
-                )
+                # Configure stream with system-specific settings
+                system = platform.system().lower()
                 
-                # Configure stream parameters
+                if system == 'linux':
+                    # Linux/ALSA specific settings
+                    buffer_size = audio_core.CHUNK * 4  # Larger buffer for stability
+                    stream = p.open(
+                        format=audio_core.FORMAT,
+                        channels=1,
+                        rate=rate,
+                        input=True,
+                        input_device_index=device_info['index'],
+                        frames_per_buffer=buffer_size,
+                        start=False,  # Don't start yet
+                        stream_callback=None,  # Use blocking mode for better stability
+                        input_host_api_specific_stream_info=None  # Let ALSA handle defaults
+                    )
+                elif system == 'darwin':
+                    # macOS specific settings
+                    stream = p.open(
+                        format=audio_core.FORMAT,
+                        channels=1,
+                        rate=rate,
+                        input=True,
+                        input_device_index=device_info['index'],
+                        frames_per_buffer=audio_core.CHUNK,  # Standard buffer size
+                        start=False,
+                        stream_callback=None
+                    )
+                else:
+                    # Default settings for other platforms
+                    stream = p.open(
+                        format=audio_core.FORMAT,
+                        channels=1,
+                        rate=rate,
+                        input=True,
+                        input_device_index=device_info['index'],
+                        frames_per_buffer=audio_core.CHUNK,
+                        start=False,
+                        stream_callback=None
+                    )
+                
+                # Start the stream
                 stream.start_stream()
+                
             except OSError as e:
                 print(f"Error opening stream with default settings: {e}")
                 print("Trying alternative configuration...")
                 
-                # Try alternative configuration with default ALSA buffer size
+                # Try alternative configuration with default chunk size
                 stream = p.open(
                     format=audio_core.FORMAT,
                     channels=1,
                     rate=rate,
                     input=True,
                     input_device_index=device_info['index'],
-                    frames_per_buffer=audio_core.CHUNK,  # Use default chunk size
+                    frames_per_buffer=audio_core.CHUNK,
                     start=True,
-                    stream_callback=None  # Use blocking mode
+                    stream_callback=None
                 )
 
             print(f"\nSuccessfully initialized audio device: {device_info['name']}")

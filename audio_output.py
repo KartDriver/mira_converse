@@ -60,37 +60,35 @@ class AudioOutput:
             device_info = self._find_output_device()
             print(f"[TTS Output] Using device: {device_info['name']}")
             
-            # Open stream with standard parameters
-            self.stream = self.pyaudio.open(
-                format=pyaudio.paInt16,
-                channels=1,  # Mono
-                rate=48000,  # Standard rate that most devices support
-                output=True,
-                start=False
-            )
+            # Configure stream based on OS
+            system = platform.system().lower()
+            stream_params = {
+                'format': pyaudio.paInt16,  # Use int16 for all platforms
+                'channels': 1,  # Mono
+                'rate': 24000,  # Match TTS output rate
+                'output': True,
+                'start': False,
+                'output_device_index': device_info['index']
+            }
+            
+            # OS-specific configurations
+            if system == 'darwin':
+                # macOS: smaller buffer for lower latency
+                stream_params['frames_per_buffer'] = 1024
+            elif system == 'linux':
+                # Linux: larger buffer for stability
+                stream_params['frames_per_buffer'] = 2048
+                # Let ALSA handle buffer management
+                stream_params['input_host_api_specific_stream_info'] = None
+            
+            # Open stream with configured parameters
+            self.stream = self.pyaudio.open(**stream_params)
             
             print("[TTS Output] Successfully initialized audio")
             
         except Exception as e:
             print(f"[TTS Output] Error initializing audio: {e}")
             
-    # def _test_audio(self):
-    #     """Generate a short beep to test audio output"""
-    #     try:
-    #         # Generate a short 440Hz beep
-    #         duration = 0.2  # seconds
-    #         samples = np.arange(int(duration * 48000))
-    #         test_audio = np.sin(2 * np.pi * 440 * samples / 48000)
-    #         test_audio = (test_audio * 32767).astype(np.int16)
-    #         
-    #         print("[TTS Output] Testing audio with short beep...")
-    #         self.stream.start_stream()
-    #         self.stream.write(test_audio.tobytes())
-    #         # Keep stream running for TTS
-    #         
-    #     except Exception as e:
-    #         print(f"[TTS Output] Error testing audio: {e}")
-    #     
     def start_stream(self):
         """Start the audio stream and playback thread"""
         try:
@@ -125,21 +123,13 @@ class AudioOutput:
                     if chunk.startswith(b'TTS:'):
                         chunk = chunk[4:]
                     
-                    # Convert audio from 24kHz to 48kHz
+                    # Convert audio data and play directly at 24kHz
                     audio_data = np.frombuffer(chunk, dtype=np.int16)
                     
-                    # Simple linear interpolation
-                    resampled = np.interp(
-                        np.linspace(0, len(audio_data), len(audio_data) * 2),
-                        np.arange(len(audio_data)),
-                        audio_data
-                    ).astype(np.int16)
-                    
-                    # Play the resampled audio immediately
                     if not self.stream.is_active():
                         self.stream.start_stream()
                     
-                    self.stream.write(resampled.tobytes())
+                    self.stream.write(audio_data.tobytes())
                 else:
                     # Minimal sleep when queue is empty
                     time.sleep(0.0001)  # 100 microseconds
