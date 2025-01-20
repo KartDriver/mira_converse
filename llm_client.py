@@ -10,6 +10,7 @@ import asyncio
 import time
 from openai import AsyncOpenAI
 from typing import Optional, List, Dict
+from token_counter import estimate_messages_tokens
 
 class LLMClient:
     """Client for interacting with vLLM server using OpenAI-compatible API."""
@@ -133,9 +134,29 @@ class LLMClient:
             # Store the assistant's response in history
             self.conversation_history.append({"role": "assistant", "content": full_response})
 
-            # Limit conversation history to last 10 messages (5 exchanges)
-            if len(self.conversation_history) > 10:
-                self.conversation_history = self.conversation_history[-10:]
+            # Check token count and trim history if needed
+            MAX_TOKENS = 8000
+            while True:
+                # Get all messages including system prompt
+                all_messages = [{"role": "system", "content": system_prompt}]
+                all_messages.extend(self.conversation_history)
+                
+                # Estimate total tokens
+                total_tokens = estimate_messages_tokens(all_messages)
+                
+                if total_tokens <= MAX_TOKENS:
+                    break
+                    
+                # Remove oldest exchange (user + assistant messages) if we're over the limit
+                if len(self.conversation_history) >= 2:
+                    print("\n[Context Trim] Removing oldest messages to stay within token limit")
+                    self.conversation_history = self.conversation_history[2:]
+                else:
+                    # If we somehow still exceed tokens with just the latest exchange,
+                    # we have to clear everything
+                    print("\n[Context Reset] Message too large, clearing history")
+                    self.conversation_history = []
+                    break
 
             # Print newline after response
             print()
