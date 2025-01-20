@@ -22,8 +22,6 @@ import websockets
 import numpy as np
 import samplerate
 import pyaudio
-from PyQt5.QtWidgets import QApplication
-from PyQt5.QtCore import QTimer
 import sys
 import os
 import platform
@@ -266,27 +264,19 @@ async def receive_transcripts(websocket):
     except websockets.ConnectionClosed:
         print("Server closed connection.")
 
-def create_qt_app():
-    """Create and configure Qt application"""
-    app = QApplication.instance()
-    if app is None:
-        app = QApplication(sys.argv)
-    app.setStyle('Fusion')
-    return app
-
-async def update_gui(volume_window, app):
+async def update_gui(volume_window):
     """Update GUI periodically"""
     try:
         while volume_window and volume_window.running:
             if volume_window.has_gui:
-                # Process Qt events in the main thread
-                app.processEvents()
+                # Update the volume window
+                volume_window.update()
                 # Give other tasks a chance to run
-                await asyncio.sleep(0)
+                await asyncio.sleep(0.001)
     except Exception as e:
         print(f"GUI update error: {e}")
 
-async def main(app):
+async def main():
     """Main coroutine that handles audio streaming and transcription"""
     # Set up macOS specific configurations
     if platform.system() == 'Darwin':
@@ -320,7 +310,7 @@ async def main(app):
                     
                     # Add GUI update task
                     if volume_window and volume_window.has_gui:
-                        tasks.append(asyncio.create_task(update_gui(volume_window, app)))
+                        tasks.append(asyncio.create_task(update_gui(volume_window)))
 
                     # Run all tasks until any one completes/fails
                     done, pending = await asyncio.wait(
@@ -359,36 +349,19 @@ async def main(app):
 def run_client():
     """Run the client with proper event loop handling"""
     try:
-        # Create Qt application first
-        app = create_qt_app()
-        
         # Create new event loop
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         
-        # Create and run the main coroutine
-        future = asyncio.ensure_future(main(app))
-        
-        # Run both event loops
-        while not future.done():
-            # Process Qt events
-            app.processEvents()
-            # Run one iteration of the asyncio event loop
-            loop.stop()
-            loop.run_forever()
-        
-        # Clean up
-        loop.run_until_complete(future)
-        loop.close()
+        # Run the main coroutine
+        loop.run_until_complete(main())
         
     except KeyboardInterrupt:
         print("\nShutting down...")
     except Exception as e:
         print(f"\nError: {e}")
     finally:
-        # Ensure Qt application is properly closed
-        if QApplication.instance():
-            QApplication.instance().quit()
+        loop.close()
 
 if __name__ == "__main__":
     run_client()
