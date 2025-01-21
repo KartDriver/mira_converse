@@ -1,6 +1,5 @@
 import pygame
 import numpy as np
-from audio_core import AudioCore
 
 class VolumeWindow:
     def __init__(self, device_name=None):
@@ -22,7 +21,7 @@ class VolumeWindow:
             # Initialize colors
             self.WHITE = (255, 255, 255)
             self.BLACK = (0, 0, 0)
-            self.BLUE = (33, 150, 243)  # Similar to the Qt version's #2196f3
+            self.BLUE = (33, 150, 243)
             self.GRAY = (240, 240, 240)
             self.BORDER_GRAY = (204, 204, 204)
             
@@ -34,12 +33,9 @@ class VolumeWindow:
             # Store device name
             self.device_name = device_name or "No device selected"
             
-            # Initialize audio processing
-            self.audio_core = AudioCore()
+            # Initialize state
             self.running = True
             self.has_gui = True
-            
-            # Current volume level
             self.current_volume = 0
             
             print("\nVolume meter window opened successfully")
@@ -56,20 +52,17 @@ class VolumeWindow:
             return
             
         try:
-            # Process audio using AudioCore
-            result = self.audio_core.process_audio(audio_data)
-            
-            # Calculate volume using AudioCore's professional metering
-            volume = self.audio_core.calculate_volume(audio_data)
-            
-            # Update volume level (0-100%)
-            self.current_volume = int(volume * 100)
+            # Calculate RMS volume with better scaling
+            rms = np.sqrt(np.mean(audio_data**2))
+            # Scale to reasonable volume range
+            scaled_volume = min(1.0, rms * 3.0)
+            self.current_volume = int(scaled_volume * 100)
             
             # Update display
             self.update()
             
         except Exception:
-            pass  # Ignore errors if window is being destroyed
+            pass
     
     def draw_progress_bar(self, value):
         """Draw the volume progress bar"""
@@ -130,9 +123,16 @@ class VolumeWindow:
     def close(self):
         """Close the window"""
         if self.running and self.has_gui:
+            print("\nClosing volume meter window...")
             self.running = False
             self.has_gui = False
             try:
+                # Process any pending events
+                pygame.event.pump()
+                # Explicitly hide the window
+                if hasattr(self, 'screen'):
+                    pygame.display.quit()
+                # Quit pygame
                 pygame.quit()
             except Exception as e:
                 print(f"Error closing window: {e}")

@@ -7,7 +7,7 @@ import numpy as np
 import time
 from collections import deque
 from scipy import signal
-import pyaudio
+import sounddevice as sd
 import platform
 import warnings
 import io
@@ -49,139 +49,159 @@ class AudioCore:
         self.prev_sample = 0.0
 
         # Audio device configuration
-        self.CHUNK = 2048
-        self.FORMAT = pyaudio.paInt16
+        self.CHUNK = 2048  # Larger chunk size for better processing
         self.CHANNELS = 1
         self.DESIRED_RATE = 16000
 
     def init_audio_device(self):
         """Initialize audio device with proper configuration"""
-        p = pyaudio.PyAudio()
         try:
             # Print available devices for debugging
             print("\nAvailable audio devices:")
-            for i in range(p.get_device_count()):
-                try:
-                    dev_info = p.get_device_info_by_index(i)
-                    print(f"Device {i}: {dev_info['name']} (inputs: {dev_info['maxInputChannels']})")
-                except OSError:
-                    print(f"Device {i}: <error accessing device>")
-
-            # Find a suitable input device
-            device_info = self._find_input_device(p)
-            if device_info['maxInputChannels'] > 0:
-                print(f"\nSelected audio device: {device_info['name']} (index: {device_info['index']})")
-                
-                # Check if device supports 16kHz directly
-                rate = self.DESIRED_RATE
-                needs_resampling = not self._is_rate_supported(p, device_info, self.DESIRED_RATE)
-                
-                if needs_resampling:
-                    # Find the closest supported rate above 16kHz
-                    supported_rates = [r for r in [16000, 22050, 32000, 44100, 48000] 
-                                     if self._is_rate_supported(p, device_info, r)]
-                    if not supported_rates:
-                        raise ValueError("No suitable sample rates supported by the device")
-                    rate = min(supported_rates)
-                    print(f"\nDevice doesn't support 16kHz directly. Using {rate}Hz with resampling.")
-                else:
-                    print("\nDevice supports 16kHz recording directly.")
-                
-                return p, device_info, rate, needs_resampling
-            else:
-                raise ValueError("Selected device has no input channels")
-        except Exception as e:
-            p.terminate()
-            raise RuntimeError(f"Failed to initialize audio: {str(e)}")
-
-    def _is_rate_supported(self, p, device_info, rate):
-        """Check if the given sample rate is supported by the device"""
-        try:
-            return p.is_format_supported(
-                rate,
-                input_device=device_info['index'],
-                input_channels=self.CHANNELS,
-                input_format=self.FORMAT
-            )
-        except ValueError:
-            return False
-
-    def _find_input_device(self, p):
-        """Find a suitable audio input device with system-specific preferences"""
-        system = platform.system().lower()
-        
-        # On Linux, try to suppress common ALSA warnings
-        if system == 'linux':
-            warnings.filterwarnings("ignore", category=RuntimeWarning, module="sounddevice")
-
-        # First try to find built-in microphone based on system
-        for i in range(p.get_device_count()):
-            try:
-                device_info = p.get_device_info_by_index(i)
-                device_name = device_info.get('name', '').lower()
-                
-                if device_info['maxInputChannels'] > 0:
+            print(sd.query_devices())
+            
+            # Find a suitable input device based on system
+            system = platform.system().lower()
+            
+            # On Linux, try to suppress common ALSA warnings
+            if system == 'linux':
+                warnings.filterwarnings("ignore", category=RuntimeWarning, module="sounddevice")
+            
+            # Try to find built-in microphone based on system
+            devices = sd.query_devices()
+            working_device = None
+            device_info = None
+            
+            for i, device in enumerate(devices):
+                if device['max_input_channels'] > 0:
+                    device_name = device['name'].lower()
+                    
                     # On macOS, prefer the built-in microphone
                     if system == 'darwin' and 'macbook' in device_name and 'microphone' in device_name:
                         print("\nSelected MacBook's built-in microphone")
-                        return device_info
+                        working_device = i
+                        device_info = device
+                        break
                         
                     # On Linux, prioritize AMD audio device for Lenovo laptops
                     elif system == 'linux':
                         # First preference: AMD audio device
                         if 'acp' in device_name:
-                            print(f"\nSelected AMD audio device: {device_info['name']}")
-                            return device_info
+                            print(f"\nSelected AMD audio device: {device['name']}")
+                            working_device = i
+                            device_info = device
+                            break
                         # Second preference: Default device
                         try:
-                            default_info = p.get_default_input_device_info()
-                            if default_info['index'] == device_info['index']:
-                                print(f"\nSelected default ALSA device: {device_info['name']}")
-                                return device_info
-                        except OSError:
+                            default_info = sd.query_default_device('input')
+                            if default_info[0] == i:
+                                print(f"\nSelected default ALSA device: {device['name']}")
+                                working_device = i
+                                device_info = device
+                                break
+                        except Exception:
                             pass
-            except OSError:
-                continue
+            
+            # Fall back to default input device if no specific device found
+            if working_device is None:
+                try:
+                    default_device = sd.query_default_device('input')[0]
+                    device_info = sd.query_devices(default_device)
+                    working_device = default_device
+                    print(f"\nUsing default input device: {device_info['name']}")
+                except Exception as e:
+                    print(f"Error getting default device: {e}")
+                    # Last resort: use first available input device
+                    for i, device in enumerate(devices):
+                        if device['max_input_channels'] > 0:
+                            working_device = i
+                            device_info = device
+                            print(f"\nUsing first available input device: {device['name']}")
+                            break
+            
+            if working_device is None or device_info is None:
+                raise RuntimeError("No suitable input device found")
+            
+            # Configure stream parameters
+            rate = int(device_info['default_samplerate'])
+            needs_resampling = rate != self.DESIRED_RATE
+            
+            # Print detailed device info
+            print("\nSelected device details:")
+            print(f"  Name: {device_info['name']}")
+            print(f"  Input channels: {device_info['max_input_channels']}")
+            print(f"  Default samplerate: {rate}")
+            print(f"  Low latency: {device_info['default_low_input_latency']}")
+            print(f"  High latency: {device_info['default_high_input_latency']}")
+            
+            # Create input stream with optimal settings
+            stream = sd.InputStream(
+                device=working_device,
+                channels=1,
+                samplerate=rate,
+                dtype=np.float32,
+                blocksize=self.CHUNK,
+                latency='low'  # Use low latency for better responsiveness
+            )
+            
+            print("\nStarting stream...")
+            stream.start()
+            
+            # Verify stream is working
+            test_data = stream.read(self.CHUNK)[0]
+            if np.all(test_data == 0):
+                print("WARNING: Microphone input is all zeros!")
+            elif np.max(np.abs(test_data)) < 0.001:
+                print("WARNING: Very low microphone input levels!")
+            else:
+                level = 20 * np.log10(np.max(np.abs(test_data)) + 1e-10)
+                rms = 20 * np.log10(np.sqrt(np.mean(test_data**2)) + 1e-10)
+                print(f"\nMicrophone test successful:")
+                print(f"  Peak level: {level:.1f} dB")
+                print(f"  RMS level: {rms:.1f} dB")
+                print(f"  Sample rate: {rate} Hz")
+            
+            return stream, device_info, rate, needs_resampling
+            
+        except Exception as e:
+            raise RuntimeError(f"Failed to initialize audio: {str(e)}")
 
-        # Try system default input device
-        try:
-            default_device_info = p.get_default_input_device_info()
-            if default_device_info['maxInputChannels'] > 0:
-                print("\nSelected system default input device")
-                return default_device_info
-        except OSError:
-            pass
-
-        # Fall back to first available input device
-        for i in range(p.get_device_count()):
-            try:
-                device_info = p.get_device_info_by_index(i)
-                if device_info['maxInputChannels'] > 0:
-                    print("\nSelected first available input device")
-                    return device_info
-            except OSError:
-                continue
-        
-        raise RuntimeError("No suitable input device found")
-
-    def bytes_to_float32_audio(self, raw_bytes):
-        """Convert raw bytes to float32 audio data"""
-        audio_buffer = io.BytesIO(raw_bytes)
-        audio_data, sample_rate = sf.read(audio_buffer, dtype='float32', 
-                                        format='RAW', subtype='PCM_16', 
-                                        samplerate=16000, channels=1)
-        return audio_data, sample_rate
+    def bytes_to_float32_audio(self, audio_data, sample_rate=None):
+        """Convert bytes to float32 audio data"""
+        # Convert bytes to int16 numpy array
+        audio_int16 = np.frombuffer(audio_data, dtype=np.int16)
+        # Convert to float32 and normalize to [-1.0, 1.0]
+        audio_float32 = audio_int16.astype(np.float32) / 32768.0
+        # Use provided sample rate or default to DESIRED_RATE
+        return audio_float32, (sample_rate if sample_rate is not None else self.DESIRED_RATE)
 
     def process_audio(self, audio_data):
         """Process audio with professional techniques"""
-        # Remove DC offset
-        dc_removed = audio_data - np.mean(audio_data)
+        # Check for empty or invalid input
+        if len(audio_data) == 0:
+            return {
+                'audio': np.array([]),
+                'is_speech': False,
+                'db_level': self.rms_level,
+                'noise_floor': self.noise_floor,
+                'speech_ratio': 0,
+                'zero_crossings': 0,
+                'peak_level': self.peak_level
+            }
+            
+        # Remove DC offset (with empty array check)
+        if len(audio_data) > 0:
+            dc_removed = audio_data - np.mean(audio_data)
+        else:
+            dc_removed = np.array([])
         
-        # Apply pre-emphasis filter
+        # Apply pre-emphasis filter (with empty array check)
         emphasized = np.zeros_like(dc_removed)
-        emphasized[0] = dc_removed[0] - self.pre_emphasis * self.prev_sample
-        emphasized[1:] = dc_removed[1:] - self.pre_emphasis * dc_removed[:-1]
-        self.prev_sample = dc_removed[-1]
+        if len(dc_removed) > 0:
+            emphasized[0] = dc_removed[0] - self.pre_emphasis * self.prev_sample
+            if len(dc_removed) > 1:
+                emphasized[1:] = dc_removed[1:] - self.pre_emphasis * dc_removed[:-1]
+            self.prev_sample = dc_removed[-1]
         
         # Update levels with envelope following
         now = time.time()
@@ -233,13 +253,30 @@ class AudioCore:
                     self.noise_floor + (base_floor - self.noise_floor) * alpha_release
                 )
 
-        # Spectral analysis for speech detection
-        freqs, times, Sxx = signal.spectrogram(emphasized, fs=16000, 
-                                             nperseg=256, noverlap=128)
-        speech_mask = (freqs >= 100) & (freqs <= 3500)
-        speech_energy = np.mean(Sxx[speech_mask, :])
-        total_energy = np.mean(Sxx)
-        speech_ratio = speech_energy / total_energy if total_energy > 0 else 0
+        # Spectral analysis for speech detection with dynamic window size
+        if len(emphasized) > 0:
+            # Use smaller window size for short segments
+            nperseg = min(256, len(emphasized))
+            # Ensure noverlap is less than nperseg
+            noverlap = min(nperseg - 1, nperseg // 2)
+            
+            try:
+                freqs, times, Sxx = signal.spectrogram(
+                    emphasized, 
+                    fs=16000,
+                    nperseg=nperseg,
+                    noverlap=noverlap,
+                    scaling='spectrum'
+                )
+                speech_mask = (freqs >= 100) & (freqs <= 3500)
+                speech_energy = np.mean(Sxx[speech_mask, :]) if Sxx.size > 0 else 0
+                total_energy = np.mean(Sxx) if Sxx.size > 0 else 0
+                speech_ratio = speech_energy / total_energy if total_energy > 0 else 0
+            except Exception as e:
+                print(f"Spectrogram analysis failed: {e}")
+                speech_ratio = 0
+        else:
+            speech_ratio = 0
         
         # Calculate zero-crossings
         zero_crossings = np.sum(np.abs(np.diff(np.signbit(emphasized)))) / len(emphasized)

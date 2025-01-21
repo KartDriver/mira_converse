@@ -18,9 +18,11 @@ class LLMClient:
     def __init__(self, config_path: str = "config.json"):
         """Initialize LLM client with configuration."""
         self.config = self._load_config(config_path)
+        # Use API key from config, defaulting to "not-needed" if not present
+        api_key = self.config["llm"].get("api_key", "not-needed")
         self.client = AsyncOpenAI(
             base_url=self.config["llm"]["api_base"],
-            api_key="not-needed"  # vLLM doesn't require API key
+            api_key=api_key
         )
         # Initialize conversation history
         self.conversation_history: List[Dict[str, str]] = []

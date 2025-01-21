@@ -9,10 +9,6 @@ import time
 import sys
 sys.path.append('/mnt/models/hexgrad/Kokoro-82M')
 from models import build_model
-#!/usr/bin/env python3
-
-import asyncio
-import websockets
 from collections import deque
 from audio_core import AudioCore
 
@@ -66,14 +62,27 @@ class AudioServer:
     def __init__(self):
         self.audio_core = AudioCore()
         # Pre-roll buffer for catching speech starts
-        self.preroll_duration = 0.3  # seconds
+        self.preroll_duration = 0.5  # seconds (increased for better phrase capture)
         self.preroll_samples = int(16000 * self.preroll_duration)  # at 16kHz
         self.preroll_buffer = deque(maxlen=self.preroll_samples)
         self.last_speech_end = 0  # timestamp of last speech end
+        
+        # Speech detection parameters
+        self.min_speech_duration = 0.5  # seconds (increased for better phrase detection)
+        self.max_silence_duration = 0.8  # seconds of silence before ending speech
+        self.speech_start_time = 0
+        self.last_speech_level = -96.0
+        
         # Transcript filtering
-        self.transcript_history = deque(maxlen=5)
-        self.min_speech_duration = 0.3  # seconds
+        self.transcript_history = deque(maxlen=10)  # Increased history
+        self.min_confidence = 0.4  # Base confidence threshold
+        self.short_phrase_confidence = 0.8  # Higher threshold for short phrases
         self.last_debug_time = 0
+        
+        # Debounce for repeated transcripts
+        self.last_transcript = ""
+        self.last_transcript_time = 0
+        self.min_repeat_interval = 2.0  # seconds between identical transcripts
         
     def add_to_preroll(self, audio_data):
         """Add audio to pre-roll buffer"""
@@ -88,31 +97,45 @@ class AudioServer:
             return np.array(self.preroll_buffer)
         return np.array([])
 
-    def should_process_transcript(self, transcript, confidence):
+    def should_process_transcript(self, transcript, confidence, speech_duration):
         """Determine if transcript should be processed based on sophisticated rules"""
-        if not transcript or confidence < 0.4:
+        if not transcript:
             return False
             
         transcript = transcript.strip().lower()
+        now = time.time()
         
-        # Skip "Thank you." response (case insensitive)
-        if transcript == "thank you.":
-            return False
-            
-        # Skip empty or single character transcripts
+        # Basic validation
         if len(transcript.strip()) <= 1:
             return False
             
-        # Skip if it's a repeat of recent transcript
-        if transcript in self.transcript_history:
+        # Skip common false positives
+        if transcript in ["thank you.", "thanks.", "okay.", "ok.", "mm.", "hmm.", "um.", "uh."]:
             return False
             
-        # Skip very short phrases unless they have high confidence
-        if len(transcript.split()) <= 2 and confidence < 0.8:
-            return False
+        # Duration-based validation (ignore confidence since Whisper v3 doesn't provide it)
+        if speech_duration < self.min_speech_duration:
+            # For very short utterances, be more strict about what we accept
+            word_count = len(transcript.split())
+            if word_count <= 2:
+                # Skip very short phrases unless they contain the trigger word
+                if "carla" not in transcript:
+                    return False
+        
+        # Check for repeated transcripts with debounce
+        if transcript == self.last_transcript:
+            if now - self.last_transcript_time < self.min_repeat_interval:
+                return False
             
-        # Add to history and return True if passed all filters
+        # Check recent history (case-insensitive)
+        if any(t.lower() == transcript for t in self.transcript_history):
+            return False
+        
+        # Update history and timestamps
         self.transcript_history.append(transcript)
+        self.last_transcript = transcript
+        self.last_transcript_time = now
+        
         return True
 
 ################################################################################
@@ -209,7 +232,7 @@ async def transcribe_audio(websocket):
             if isinstance(message, bytes):
                 try:
                     # Process each chunk individually
-                    chunk_data, sr = server.audio_core.bytes_to_float32_audio(message)
+                    chunk_data, sr = server.audio_core.bytes_to_float32_audio(message, sample_rate=24000 if message.startswith(b'TTS:') else None)
                     result = server.audio_core.process_audio(chunk_data)
                     
                     # Always update preroll buffer
@@ -221,27 +244,39 @@ async def transcribe_audio(websocket):
                         preroll = server.get_preroll_audio()
                         audio_buffer = bytearray(message)
                         was_speech = True
+                        server.speech_start_time = time.time()
+                        server.last_speech_level = result['db_level']
                     elif was_speech:
                         if result['is_speech']:
                             # Continue collecting speech
                             audio_buffer.extend(message)
+                            server.last_speech_level = max(server.last_speech_level, result['db_level'])
                         else:
-                            # Speech ended - wait a short moment to ensure we have the complete phrase
-                            await asyncio.sleep(0.1)  # 100ms delay
+                            # Speech ended - wait for complete phrase
+                            await asyncio.sleep(server.max_silence_duration)
                             
-                            # Final check of the chunk to confirm speech has ended
-                            final_check, _ = server.audio_core.bytes_to_float32_audio(message)
-                            final_result = server.audio_core.process_audio(final_check)
+                            # Multiple final checks to ensure speech has truly ended
+                            silence_confirmed = True
+                            for _ in range(3):  # Check multiple chunks
+                                final_check, _ = server.audio_core.bytes_to_float32_audio(message, sample_rate=24000 if message.startswith(b'TTS:') else None)
+                                final_result = server.audio_core.process_audio(final_check)
+                                if final_result['is_speech'] or final_result['db_level'] > server.last_speech_level - 3:
+                                    silence_confirmed = False
+                                    break
+                                await asyncio.sleep(0.05)  # Short delay between checks
                             
-                            if not final_result['is_speech']:
+                            if silence_confirmed:
                                 if audio_buffer:
                                     # Convert buffer to audio
-                                    audio_data, sr = server.audio_core.bytes_to_float32_audio(audio_buffer)
+                                    audio_data, sr = server.audio_core.bytes_to_float32_audio(audio_buffer, sample_rate=24000 if audio_buffer.startswith(b'TTS:') else None)
                                     
                                     # Add preroll if available
                                     preroll = server.get_preroll_audio()
                                     if len(preroll) > 0:
                                         audio_data = np.concatenate([preroll, audio_data])
+                                    
+                                    # Calculate speech duration
+                                    speech_duration = time.time() - server.speech_start_time
                                     
                                     # Run speech recognition
                                     asr_result = asr_pipeline(
@@ -261,10 +296,18 @@ async def transcribe_audio(websocket):
                                     transcript = asr_result["text"].strip()
                                     confidence = asr_result.get("confidence", 0.0)
                                     
-                                    # Skip "Thank you." responses
-                                    if transcript.lower().strip() != "thank you.":
-                                        print(f"- Transcript: '{transcript}'")
-                                        await websocket.send(transcript)
+                                    # Process transcript with improved filtering
+                                    if server.should_process_transcript(transcript, confidence, speech_duration):
+                                        try:
+                                            if isinstance(transcript, bytes):
+                                                transcript = transcript.decode('utf-8')
+                                            transcript_str = str(transcript)
+                                            print(f"\nTranscript: '{transcript_str}' (confidence: {confidence:.2f}, duration: {speech_duration:.2f}s)")
+                                            await websocket.send(transcript_str)
+                                        except Exception as e:
+                                            print(f"Error sending transcript: {e}")
+                                    else:
+                                        print(f"\nFiltered transcript: '{transcript}' (confidence: {confidence:.2f}, duration: {speech_duration:.2f}s)")
                             
                             # Reset for next speech segment
                             audio_buffer = None
