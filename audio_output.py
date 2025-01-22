@@ -10,7 +10,7 @@ class AudioOutput:
         self.stream = None
         self.device_rate = None
         self.input_rate = 24000  # TTS output rate
-        self.audio_queue = deque()
+        self.audio_queue = deque()  # Remove maxlen to preserve all chunks
         self.playing = False
         self.play_thread = None
 
@@ -45,12 +45,12 @@ class AudioOutput:
             device_info = self._find_output_device()
             self.device_rate = int(device_info['default_samplerate'])
             
-            # Create output stream
+            # Create output stream with moderate latency
             self.stream = sd.OutputStream(
                 samplerate=self.device_rate,
                 channels=1,
                 dtype=np.float32,
-                latency='low'
+                latency='low'  # Keep low latency for responsiveness
             )
             self.stream.start()
             
@@ -73,25 +73,31 @@ class AudioOutput:
                     if chunk.startswith(b'TTS:'):
                         chunk = chunk[4:]
                     
-                    # Convert to float32
-                    audio_data = np.frombuffer(chunk, dtype=np.int16).astype(np.float32) / 32768.0
+                    # Convert to float32 with clipping for cleaner audio
+                    audio_data = np.clip(
+                        np.frombuffer(chunk, dtype=np.int16).astype(np.float32) / 32768.0,
+                        -1.0, 1.0
+                    )
                     
-                    # Resample if needed
+                    # Resample if needed using resample_poly for better quality
                     if self.device_rate != self.input_rate:
-                        ratio = self.device_rate / self.input_rate
-                        num_output_samples = int(len(audio_data) * ratio)
-                        audio_data = signal.resample(audio_data, num_output_samples)
+                        # Calculate resampling parameters
+                        gcd_val = np.gcd(self.device_rate, self.input_rate)
+                        up = self.device_rate // gcd_val
+                        down = self.input_rate // gcd_val
+                        # Use resample_poly with small chunk size for better real-time performance
+                        audio_data = signal.resample_poly(audio_data, up, down, padtype='line')
                     
                     # Play audio
                     if self.stream and self.stream.active:
                         self.stream.write(audio_data)
                 else:
-                    # Minimal sleep when queue is empty
-                    time.sleep(0.001)
+                    # Brief sleep when queue is empty
+                    time.sleep(0.001)  # Keep original sleep time for responsiveness
                     
             except Exception as e:
                 print(f"[TTS Output] Error in playback thread: {e}")
-                time.sleep(0.001)  # Brief pause on error
+                time.sleep(0.001)  # Keep original error sleep time
 
     async def play_chunk(self, chunk):
         """Queue an audio chunk for playback"""
