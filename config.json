@@ -5,7 +5,7 @@
     "llm": {
         "server": "10.5.2.10",
         "port": 8000,
-        "model_path": "/mnt/models/bartowski/gemma-2-27b-it-SimPO-37K-GGUF/gemma-2-27b-it-SimPO-37K-Q5_K_S.gguf",
+        "model_path": "/mnt/models/Qwen/Qwen2.5-72B-Instruct-GPTQ-Int8/",
         "api_base": "http://10.5.2.11:8000/v1",
         "api_key": "YOUR_API_KEY_HERE"
     }   
