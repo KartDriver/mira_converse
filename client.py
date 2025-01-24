@@ -29,10 +29,10 @@ import tkinter as tk
 import threading
 import queue
 
-from graphical_interface import AudioInterface
-from audio_core import AudioCore
-from llm_client import LLMClient
-from audio_output import AudioOutput
+from src.graphical_interface import AudioInterface
+from src.audio_core import AudioCore
+from src.llm_client import LLMClient
+from src.audio_output import AudioOutput
 
 import json
 import time

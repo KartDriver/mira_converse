@@ -12,7 +12,7 @@ import asyncio
 import json
 import time
 from typing import Optional, List, Dict, Any, Callable
-from audio_core import AudioCore
+from src.audio_core import AudioCore
 
 # Load configuration
 with open('config.json', 'r') as f:

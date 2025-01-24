@@ -10,7 +10,7 @@ import asyncio
 import time
 from openai import AsyncOpenAI
 from typing import Optional, List, Dict
-from token_counter import estimate_messages_tokens
+from src.token_counter import estimate_messages_tokens
 
 class LLMClient:
     """Client for interacting with vLLM server using OpenAI-compatible API."""

@@ -11,7 +11,7 @@ import json
 sys.path.append('/mnt/models/hexgrad/Kokoro-82M')
 from models import build_model
 from collections import deque
-from audio_core import AudioCore
+from src.audio_core import AudioCore
 from urllib.parse import urlparse, parse_qs  # Import for URI parsing
 
 # Load configuration
