@@ -12,6 +12,7 @@ sys.path.append('/mnt/models/hexgrad/Kokoro-82M')
 from models import build_model
 from collections import deque
 from audio_core import AudioCore
+from urllib.parse import urlparse, parse_qs  # Import for URI parsing
 
 # Load configuration
 with open('config.json', 'r') as f:
@@ -238,7 +239,7 @@ async def handle_tts(websocket, text):
         # Process any remaining chunks
         if tasks:
             await asyncio.gather(*tasks)
-            
+        
         # Send chunk end marker
         await websocket.send(b'TTS_END')
         
@@ -246,12 +247,89 @@ async def handle_tts(websocket, text):
         print(f"TTS Error: {e}")
         await websocket.send("TTS_ERROR")
 
+
+def verify_api_key(websocket):
+    """Verify the API key from the websocket connection URI"""
+    try:
+        # Get server API key from config
+        server_api_key = CONFIG['server']['websocket']['api_key']
+        if not server_api_key:
+            print("No server API key configured")
+            return False
+
+        # Try to get path from transport
+        transport = websocket.transport
+        if hasattr(transport, '_sock'):  # Check if _sock attribute exists
+            sock = transport._sock
+            if hasattr(sock, 'getpeername'): # Check if getpeername exists
+                peer_address = sock.getpeername()
+                if peer_address:
+                    host, port = peer_address[:2] # Extract host and port
+                    # Reconstruct URI path (this might be incomplete)
+                    path_string = f"?api_key={websocket.request.headers.get('api_key', '')}" # Try headers from request
+                    print(f"Reconstructed path from transport: {path_string}")
+                else:
+                    print("Could not get peer address from socket")
+                    return False
+            else:
+                print("Socket does not have getpeername method")
+                return False
+        else:
+            print("Transport does not have _sock attribute")
+            return False
+
+
+        path_string = None # Initialize path_string to None
+        try: # Try to get path from websocket.request
+            path_string = websocket.request.path
+            print(f"Path from websocket.request.path: {path_string}")
+        except AttributeError:
+            print("websocket.request.path not available")
+            pass # It's okay if websocket.request.path is not available
+
+
+        if not path_string: # Fallback to websocket.path if transport method fails
+            try:
+                path_string = websocket.path
+                print(f"Path from websocket.path: {path_string}")
+            except AttributeError:
+                print("websocket.path also not available")
+                return False
+
+
+        # Parse the path to get query parameters
+        parsed_uri = urlparse(path_string)
+        query_params = parse_qs(parsed_uri.query)
+
+        # Get client API key from query parameters
+        client_api_key_list = query_params.get('api_key', [])
+        if not client_api_key_list:
+            print("No API key provided in URI query parameters")
+            return False
+        client_api_key = client_api_key_list[0]  # Take the first API key if multiple are present
+
+        # Verify keys match
+        return client_api_key == server_api_key
+
+    except Exception as e:
+        print(f"Error verifying API key from URI: {e}")
+        return False
+
+
 async def transcribe_audio(websocket):
     """
     Receives audio chunks in raw PCM form, processes them with professional
     audio techniques, and runs speech recognition when appropriate.
     """
-    print("Client connected. Ready to receive audio chunks...")
+    # Verify API key
+    if not verify_api_key(websocket):
+        print("Client connection rejected: Invalid API key")
+        await websocket.send("AUTH_FAILED")
+        return
+        
+    # Send authentication success
+    await websocket.send("AUTH_OK")
+    print("Client authenticated. Ready to receive audio chunks...")
     server = AudioServer()
     audio_buffer = None
     was_speech = False

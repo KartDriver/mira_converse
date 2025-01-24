@@ -5,7 +5,8 @@
     "server": {
         "websocket": {
             "host": "10.5.2.10",
-            "port": 8765
+            "port": 8765,
+            "api_key": "audio_chat_secure_key_2024"
         },
         "gpu_device": "cuda:4",
         "models": {

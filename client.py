@@ -41,7 +41,10 @@ with open('config.json', 'r') as f:
     CONFIG = json.load(f)
 
 # Server configuration
-SERVER_URI = f"ws://{CONFIG['server']['websocket']['host']}:{CONFIG['server']['websocket']['port']}"
+API_KEY = CONFIG['server']['websocket']['api_key']
+SERVER_HOST = CONFIG['server']['websocket']['host']
+SERVER_PORT = CONFIG['server']['websocket']['port']
+SERVER_URI = f"ws://{SERVER_HOST}:{SERVER_PORT}?api_key={API_KEY}"
 
 # Trigger word configuration
 TRIGGER_WORD = CONFIG['assistant']['name']
@@ -204,32 +207,25 @@ class AsyncThread(threading.Thread):
             try:
                 print(f"\nAttempting to connect to server at {SERVER_URI} (attempt {retry_count + 1}/{max_retries})...")
 
-                # Try to connect with timeout
+                # Try to connect with timeout and API key in header
+                self.websocket = await websockets.connect(
+                    SERVER_URI
+                )
+                print(f"Connected to server at {SERVER_URI}.")
+
+                # Wait for authentication response
                 try:
-                    self.websocket = await asyncio.wait_for(
-                        websockets.connect(SERVER_URI),
-                        timeout=5.0  # 5 second timeout
+                    auth_response = await asyncio.wait_for(
+                        self.websocket.recv(),
+                        timeout=2.0  # 2 second timeout
                     )
-                    print(f"Connected to server at {SERVER_URI}.")
-
-                    # Test connection with ping
-                    try:
-                        pong = await asyncio.wait_for(
-                            self.websocket.ping(),
-                            timeout=2.0  # 2 second timeout
-                        )
-                        if not pong:
-                            raise Exception("No pong received")
-                    except Exception as e:
-                        print(f"Connection test failed: {e}")
-                        if self.websocket:
-                            await self.websocket.close()
-                        raise
-
+                    if auth_response != "AUTH_OK":
+                        raise Exception(f"Authentication failed: {auth_response}")
+                    
                     return True
-
-                except asyncio.TimeoutError:
-                    print("Connection attempt timed out")
+                    
+                except Exception as e:
+                    print(f"Authentication failed: {e}")
                     if self.websocket:
                         await self.websocket.close()
                     raise
