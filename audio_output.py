@@ -4,6 +4,7 @@ import threading
 from collections import deque
 import time
 from scipy import signal
+import platform
 
 class AudioOutput:
     def __init__(self):
@@ -17,33 +18,80 @@ class AudioOutput:
 
     def _find_output_device(self, device_name=None):
         """
-        Find a suitable audio output device.
+        Find a suitable audio output device with improved Linux compatibility.
         
         Args:
             device_name: Optional name of device to use. If None, uses system default.
+            
+        Returns:
+            Tuple of (device_index, device_info)
         """
         try:
             # Print available devices for debugging
             print("\nAvailable output devices:")
             devices = sd.query_devices()
+            output_devices = []
+            
+            # First pass: collect all output devices
             for i, dev in enumerate(devices):
                 if dev['max_output_channels'] > 0:
-                    print(f"Device {i}: {dev['name']} (outputs: {dev['max_output_channels']})")
+                    print(f"Device {i}: {dev['name']} (outputs: {dev['max_output_channels']}, rate: {dev['default_samplerate']}Hz)")
+                    output_devices.append((i, dev))
 
-            # If device name provided, try to find it
+            # Try to find PipeWire device first on Linux
+            if platform.system() == 'Linux':
+                # First try PipeWire
+                for i, dev in output_devices:
+                    if 'pipewire' in dev['name'].lower():
+                        print(f"\nSelected PipeWire device: {dev['name']}")
+                        self.current_device = dev
+                        return i, dev
+                
+                # Then try other Linux-specific devices
+                preferred_keywords = [
+                    'pulse', 'default',  # Modern audio servers
+                    'hw:', 'plughw:',    # ALSA devices
+                    'dmix', 'surround'   # ALSA plugins
+                ]
+                
+                # Try to find device by name if provided
+                if device_name:
+                    for i, dev in output_devices:
+                        if dev['max_output_channels'] > 0 and dev['name'] == device_name:
+                            print(f"\nSelected output device: {dev['name']}")
+                            self.current_device = dev
+                            return i, dev
+                
+                # Otherwise try preferred devices in order
+                for keyword in preferred_keywords:
+                    for i, dev in output_devices:
+                        if keyword in dev['name'].lower():
+                            print(f"\nSelected Linux output device: {dev['name']}")
+                            self.current_device = dev
+                            return i, dev
+            
+            # For non-Linux systems or if no preferred device found
             if device_name:
-                for i, dev in enumerate(devices):
+                for i, dev in output_devices:
                     if dev['max_output_channels'] > 0 and dev['name'] == device_name:
-                        device_info = dev
-                        print(f"\nSelected output device: {device_info['name']}")
-                        self.current_device = device_info
-                        return device_info
+                        print(f"\nSelected output device: {dev['name']}")
+                        self.current_device = dev
+                        return i, dev
 
             # Fall back to default output device
-            device_info = sd.query_devices(kind='output')
+            default_idx = sd.default.device[1]  # Get default output device index
+            if default_idx is not None and 0 <= default_idx < len(devices):
+                device_info = devices[default_idx]
+            else:
+                # If default device index is invalid, use first available output device
+                device_info = next((dev for i, dev in output_devices), None)
+                if device_info is None:
+                    raise RuntimeError("No output devices found")
+                default_idx = output_devices[0][0]
+            
             print(f"\nSelected default output device: {device_info['name']}")
             self.current_device = device_info
-            return device_info
+            return default_idx, device_info
 
         except Exception as e:
             print(f"Error finding output device: {e}")
@@ -71,12 +119,12 @@ class AudioOutput:
                 self.stream = None
             
             # Find and set new device
-            device_info = self._find_output_device(device_name)
+            device_idx, device_info = self._find_output_device(device_name)
             self.device_rate = int(device_info['default_samplerate'])
             
-            # Create new output stream
+            # Create output stream
             self.stream = sd.OutputStream(
-                device=device_name,
+                device=device_idx,
                 samplerate=self.device_rate,
                 channels=1,
                 dtype=np.float32,
@@ -99,11 +147,12 @@ class AudioOutput:
             print("[TTS Output] Initializing audio output...")
             
             # Find suitable output device
-            device_info = self._find_output_device()
+            device_idx, device_info = self._find_output_device()
             self.device_rate = int(device_info['default_samplerate'])
             
-            # Create output stream with moderate latency
+            # Create output stream
             self.stream = sd.OutputStream(
+                device=device_idx,
                 samplerate=self.device_rate,
                 channels=1,
                 dtype=np.float32,
@@ -128,11 +177,12 @@ class AudioOutput:
             print("[TTS Output] Initializing audio output...")
             
             # Find suitable output device
-            device_info = self._find_output_device()
+            device_idx, device_info = self._find_output_device()
             self.device_rate = int(device_info['default_samplerate'])
             
-            # Create output stream with moderate latency
+            # Create output stream
             self.stream = sd.OutputStream(
+                device=device_idx,
                 samplerate=self.device_rate,
                 channels=1,
                 dtype=np.float32,

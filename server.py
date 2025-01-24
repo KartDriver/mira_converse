@@ -7,10 +7,18 @@ import numpy as np
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 import time
 import sys
+import json
 sys.path.append('/mnt/models/hexgrad/Kokoro-82M')
 from models import build_model
 from collections import deque
 from audio_core import AudioCore
+
+# Load configuration
+with open('config.json', 'r') as f:
+    CONFIG = json.load(f)
+
+# Get trigger word from config (always use lowercase for comparison)
+TRIGGER_WORD = CONFIG['assistant']['name'].lower()
 
 ################################################################################
 # CONFIG & MODEL LOADING
@@ -61,11 +69,18 @@ from kokoro import generate
 class AudioServer:
     def __init__(self):
         self.audio_core = AudioCore()
+        # Voice filtering configuration
+        self.enable_voice_filtering = False  # Default to disabled
+        
         # Pre-roll buffer for catching speech starts
         self.preroll_duration = 0.5  # seconds (increased for better phrase capture)
         self.preroll_samples = int(16000 * self.preroll_duration)  # at 16kHz
         self.preroll_buffer = deque(maxlen=self.preroll_samples)
         self.last_speech_end = 0  # timestamp of last speech end
+        
+        # Voice profile management (cleared after each speech segment)
+        self.current_voice_profile = None
+        self.voice_profile_timestamp = None
         
         # Speech detection parameters
         self.min_speech_duration = 0.5  # seconds (increased for better phrase detection)
@@ -119,7 +134,7 @@ class AudioServer:
             word_count = len(transcript.split())
             if word_count <= 2:
                 # Skip very short phrases unless they contain the trigger word
-                if "carla" not in transcript:
+                if TRIGGER_WORD not in transcript:
                     return False
         
         # Check for repeated transcripts with debounce
@@ -304,14 +319,18 @@ async def transcribe_audio(websocket):
                                             transcript_str = str(transcript)
                                             print(f"\nTranscript: '{transcript_str}' (confidence: {confidence:.2f}, duration: {speech_duration:.2f}s)")
                                             await websocket.send(transcript_str)
+                                                
                                         except Exception as e:
-                                            print(f"Error sending transcript: {e}")
+                                            print(f"Error processing transcript: {e}")
                                     else:
                                         print(f"\nFiltered transcript: '{transcript}' (confidence: {confidence:.2f}, duration: {speech_duration:.2f}s)")
                             
                             # Reset for next speech segment
                             audio_buffer = None
                             was_speech = False
+                            # Clear voice profile at end of speech segment
+                            server.current_voice_profile = None
+                            server.voice_profile_timestamp = None
                     
                 except Exception as e:
                     print(f"Error processing audio: {e}")
@@ -319,7 +338,15 @@ async def transcribe_audio(websocket):
                     was_speech = False
 
             elif isinstance(message, str):
-                if message.strip() == "RESET":
+                if message.strip() == "VOICE_FILTER_ON":
+                    server.enable_voice_filtering = True
+                    print("\nVoice filtering enabled")
+                elif message.strip() == "VOICE_FILTER_OFF":
+                    server.enable_voice_filtering = False
+                    server.current_voice_profile = None
+                    server.voice_profile_timestamp = None
+                    print("\nVoice filtering disabled")
+                elif message.strip() == "RESET":
                     audio_buffer = bytearray()
                     was_speech = False
                     print("Buffer has been reset by client request.")

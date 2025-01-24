@@ -15,6 +15,11 @@ import soundfile as sf
 
 class AudioCore:
     def __init__(self):
+        # Voice profile storage
+        self.voice_profile = None
+        self.profile_timestamp = None
+        self.profile_similarity_threshold = 0.3  # More permissive threshold for better trigger detection
+        
         # Professional audio time constants
         self.peak_attack = 0.001   # 1ms peak attack
         self.peak_release = 0.100  # 100ms peak release
@@ -36,9 +41,9 @@ class AudioCore:
         self.recent_levels = deque(maxlen=self.window_size)
         self.min_history = deque(maxlen=20)  # Longer history for stability
         
-        # Speech detection with hysteresis
-        self.speech_threshold_open = 2.5    # Open threshold above floor (dB)
-        self.speech_threshold_close = 1.5   # Close threshold above floor (dB)
+        # Speech detection with hysteresis (more sensitive thresholds)
+        self.speech_threshold_open = 2.0    # Open threshold above floor (dB)
+        self.speech_threshold_close = 1.0   # Close threshold above floor (dB)
         self.is_speaking = False
         self.hold_counter = 0
         self.hold_samples = 15     # Hold samples at 50Hz update rate (0.3s at 50Hz)
@@ -175,6 +180,105 @@ class AudioCore:
         # Use provided sample rate or default to DESIRED_RATE
         return audio_float32, (sample_rate if sample_rate is not None else self.DESIRED_RATE)
 
+    def create_voice_profile(self, audio_data):
+        """
+        Create a voice profile from an audio segment.
+        Returns a dictionary containing spectral characteristics.
+        """
+        # Ensure audio data is valid
+        if len(audio_data) == 0:
+            return None
+            
+        # Remove DC offset and apply pre-emphasis
+        dc_removed = audio_data - np.mean(audio_data)
+        emphasized = np.zeros_like(dc_removed)
+        emphasized[0] = dc_removed[0]
+        emphasized[1:] = dc_removed[1:] - self.pre_emphasis * dc_removed[:-1]
+        
+        # Calculate spectral characteristics
+        nperseg = min(256, len(emphasized))
+        noverlap = min(nperseg - 1, nperseg // 2)
+        
+        try:
+            freqs, _, Sxx = signal.spectrogram(
+                emphasized,
+                fs=16000,
+                nperseg=nperseg,
+                noverlap=noverlap,
+                scaling='spectrum'
+            )
+            
+            # Focus on speech frequency bands
+            speech_mask = (freqs >= 100) & (freqs <= 3500)
+            speech_freqs = freqs[speech_mask]
+            speech_power = np.mean(Sxx[speech_mask, :], axis=1)
+            
+            # Calculate additional voice characteristics
+            zero_crossings = np.sum(np.abs(np.diff(np.signbit(emphasized)))) / len(emphasized)
+            rms = np.sqrt(np.mean(emphasized**2))
+            peak = np.max(np.abs(emphasized))
+            
+            # Create profile
+            profile = {
+                'spectral_signature': speech_power,
+                'frequency_bands': speech_freqs,
+                'zero_crossing_rate': zero_crossings,
+                'rms_level': 20 * np.log10(max(rms, 1e-10)),
+                'peak_level': 20 * np.log10(max(peak, 1e-10)),
+                'timestamp': time.time()
+            }
+            
+            return profile
+            
+        except Exception as e:
+            print(f"Error creating voice profile: {e}")
+            return None
+
+    def compare_voice_profile(self, audio_data, profile):
+        """
+        Compare audio segment with stored voice profile.
+        Returns similarity score between 0 and 1.
+        """
+        if profile is None or len(audio_data) == 0:
+            return 0.0
+            
+        try:
+            # Create temporary profile for comparison
+            current_profile = self.create_voice_profile(audio_data)
+            if current_profile is None:
+                return 0.0
+                
+            # Compare spectral signatures
+            ref_spectrum = profile['spectral_signature']
+            cur_spectrum = current_profile['spectral_signature']
+            
+            # Ensure spectra are the same length
+            min_len = min(len(ref_spectrum), len(cur_spectrum))
+            ref_spectrum = ref_spectrum[:min_len]
+            cur_spectrum = cur_spectrum[:min_len]
+            
+            # Calculate normalized cross-correlation
+            spectrum_similarity = np.corrcoef(ref_spectrum, cur_spectrum)[0, 1]
+            if np.isnan(spectrum_similarity):
+                spectrum_similarity = 0.0
+            
+            # Compare other characteristics with tolerance
+            zcr_similarity = 1.0 - min(1.0, abs(profile['zero_crossing_rate'] - 
+                                               current_profile['zero_crossing_rate']) / 0.01)
+            level_similarity = 1.0 - min(1.0, abs(profile['rms_level'] - 
+                                                 current_profile['rms_level']) / 20.0)
+            
+            # Weighted combination of similarities (much more weight on basic characteristics)
+            total_similarity = (0.2 * max(0, spectrum_similarity) + 
+                              0.4 * zcr_similarity +      # More weight on pitch/timing
+                              0.4 * level_similarity)     # More weight on volume patterns
+            
+            return max(0.0, min(1.0, total_similarity))
+            
+        except Exception as e:
+            print(f"Error comparing voice profiles: {e}")
+            return 0.0
+
     def process_audio(self, audio_data):
         """Process audio with professional techniques"""
         # Check for empty or invalid input
@@ -289,6 +393,8 @@ class AudioCore:
             is_speech = (self.rms_level > self.noise_floor + self.speech_threshold_open and 
                         has_speech_character)
             if is_speech:
+                # Add debug print to see when speech gate opens
+                print(f"\n[DEBUG] Speech gate opening - Level: {self.rms_level:.1f}dB, Floor: {self.noise_floor:.1f}dB")
                 self.is_speaking = True
                 self.hold_counter = self.hold_samples
         else:

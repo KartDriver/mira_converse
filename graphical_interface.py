@@ -8,6 +8,7 @@ from tkinter import ttk
 import queue
 import sounddevice as sd
 import numpy as np
+import asyncio
 from typing import Optional, List, Dict, Any, Callable
 
 class AudioInterface:
@@ -113,7 +114,7 @@ class AudioInterface:
     def _create_volume_frame(self):
         """Create frame for volume visualization"""
         volume_frame = ttk.LabelFrame(self.root, text="Microphone Input Level", padding=5)
-        volume_frame.grid(row=2, column=0, padx=10, pady=5, sticky="ew")
+        volume_frame.grid(row=3, column=0, padx=10, pady=5, sticky="ew")
         
         # Volume progress bar
         self.volume_bar = ttk.Progressbar(
@@ -251,6 +252,8 @@ class AudioInterface:
                 print(f"Error updating GUI: {e}")
                 self.running = False
                 self.has_gui = False
+    
+
     
     def close(self):
         """
