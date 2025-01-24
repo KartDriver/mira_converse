@@ -544,9 +544,9 @@ class AudioCore:
         # Speech detection with spectral analysis and hysteresis
         has_speech_character = speech_ratio > 1.02 and zero_crossings > 0.0002
         
-        # Calculate thresholds relative to noise floor
-        open_threshold = 30.0  # dB above noise floor to open gate
-        close_threshold = 25.0  # dB above noise floor to close gate
+        # Use configured thresholds relative to noise floor
+        open_threshold = self.speech_threshold_open  # dB above noise floor to open gate
+        close_threshold = self.speech_threshold_close  # dB above noise floor to close gate
         
         # Calculate level above floor for debugging with safety checks
         try:
@@ -570,12 +570,12 @@ class AudioCore:
             # Check if should open gate
             is_speech = (level_above_floor > open_threshold and has_speech_character)
             if is_speech:
-                print(f"\n[DEBUG] Speech gate opening:")
-                print(f"  Level: {self.rms_level:.1f} dB")
-                print(f"  Floor: {self.noise_floor:.1f} dB")
-                print(f"  Above floor: {level_above_floor:.1f} dB")
-                print(f"  Speech ratio: {speech_ratio:.3f}")
-                print(f"  Zero crossings: {zero_crossings:.4f}")
+                # print(f"\n[DEBUG] Speech gate opening:")
+                # print(f"  Level: {self.rms_level:.1f} dB")
+                # print(f"  Floor: {self.noise_floor:.1f} dB")
+                # print(f"  Above floor: {level_above_floor:.1f} dB")
+                # print(f"  Speech ratio: {speech_ratio:.3f}")
+                # print(f"  Zero crossings: {zero_crossings:.4f}")
                 self.is_speaking = True
                 self.hold_counter = 50  # Increased hold samples for better phrase detection
         else:
@@ -584,17 +584,17 @@ class AudioCore:
                 if self.hold_counter > 0:
                     self.hold_counter -= 1
                     is_speech = True
-                    if self.hold_counter % 10 == 0:  # Print debug every 10 samples
-                        print(f"\n[DEBUG] Hold counter: {self.hold_counter}")
-                        print(f"  Level: {self.rms_level:.1f} dB")
-                        print(f"  Above floor: {level_above_floor:.1f} dB")
+                    # if self.hold_counter % 10 == 0:  # Print debug every 10 samples
+                    #     print(f"\n[DEBUG] Hold counter: {self.hold_counter}")
+                    #     print(f"  Level: {self.rms_level:.1f} dB")
+                    #     print(f"  Above floor: {level_above_floor:.1f} dB")
                 else:
-                    print(f"\n[DEBUG] Speech gate closing:")
-                    print(f"  Level: {self.rms_level:.1f} dB")
-                    print(f"  Floor: {self.noise_floor:.1f} dB")
-                    print(f"  Above floor: {level_above_floor:.1f} dB")
-                    print(f"  Speech ratio: {speech_ratio:.3f}")
-                    print(f"  Zero crossings: {zero_crossings:.4f}")
+                    # print(f"\n[DEBUG] Speech gate closing:")
+                    # print(f"  Level: {self.rms_level:.1f} dB")
+                    # print(f"  Floor: {self.noise_floor:.1f} dB")
+                    # print(f"  Above floor: {level_above_floor:.1f} dB")
+                    # print(f"  Speech ratio: {speech_ratio:.3f}")
+                    # print(f"  Zero crossings: {zero_crossings:.4f}")
                     self.is_speaking = False
                     is_speech = False
             else:

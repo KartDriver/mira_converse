@@ -51,8 +51,8 @@
         "min_speech_duration": 0.5,
         "max_silence_duration": 0.8,
         "thresholds": {
-            "open": 2.0,
-            "close": 1.0
+            "open": 30.0,
+            "close": 25.0
         },
         "window_size": 150,
         "hold_samples": 15,
