@@ -41,7 +41,7 @@ with open('config.json', 'r') as f:
     CONFIG = json.load(f)
 
 # Server configuration
-SERVER_URI = "ws://10.5.2.10:8765"  # Or ws://<server-ip>:8765 if remote
+SERVER_URI = f"ws://{CONFIG['server']['websocket']['host']}:{CONFIG['server']['websocket']['port']}"
 
 # Trigger word configuration
 TRIGGER_WORD = CONFIG['assistant']['name']

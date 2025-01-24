@@ -126,7 +126,7 @@ class AudioOutput:
             self.stream = sd.OutputStream(
                 device=device_idx,
                 samplerate=self.device_rate,
-                channels=1,
+                channels=2,  # Use stereo output
                 dtype=np.float32,
                 latency='low'
             )
@@ -154,7 +154,7 @@ class AudioOutput:
             self.stream = sd.OutputStream(
                 device=device_idx,
                 samplerate=self.device_rate,
-                channels=1,
+                channels=2,  # Use stereo output
                 dtype=np.float32,
                 latency='low'  # Keep low latency for responsiveness
             )
@@ -184,7 +184,7 @@ class AudioOutput:
             self.stream = sd.OutputStream(
                 device=device_idx,
                 samplerate=self.device_rate,
-                channels=1,
+                channels=2,  # Use stereo output
                 dtype=np.float32,
                 latency='low'  # Keep low latency for responsiveness
             )
@@ -214,6 +214,9 @@ class AudioOutput:
                         np.frombuffer(chunk, dtype=np.int16).astype(np.float32) / 32768.0,
                         -1.0, 1.0
                     )
+                    
+                    # Convert mono to stereo
+                    audio_data = np.column_stack((audio_data, audio_data))
                     
                     # Resample if needed using resample_poly for better quality
                     if self.device_rate != self.input_rate:

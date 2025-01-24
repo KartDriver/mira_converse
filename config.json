@@ -2,11 +2,27 @@
     "assistant": {
         "name": "Mira"
     },
+    "server": {
+        "websocket": {
+            "host": "10.5.2.10",
+            "port": 8765
+        },
+        "gpu_device": "cuda:4",
+        "models": {
+            "whisper": {
+                "path": "/mnt/models/openai/whisper-large-v3-turbo"
+            },
+            "kokoro": {
+                "path": "/mnt/models/hexgrad/Kokoro-82M",
+                "voice_name": "af"
+            }
+        }
+    },
     "llm": {
         "server": "10.5.2.10",
         "port": 8000,
         "model_path": "/mnt/models/Qwen/Qwen2.5-72B-Instruct-GPTQ-Int8/",
         "api_base": "http://10.5.2.11:8000/v1",
         "api_key": "YOUR_API_KEY_HERE"
-    }   
+    }
 }

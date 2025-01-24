@@ -24,12 +24,12 @@ TRIGGER_WORD = CONFIG['assistant']['name'].lower()
 # CONFIG & MODEL LOADING
 ################################################################################
 
-# Change "cuda:4" to your preferred GPU index or use "cuda:0" if you only have one GPU
-device = "cuda:4" if torch.cuda.is_available() else "cpu"
-KOKORO_PATH = "/mnt/models/hexgrad/Kokoro-82M"
+# Set device from config
+device = CONFIG['server']['gpu_device'] if torch.cuda.is_available() else "cpu"
+KOKORO_PATH = CONFIG['server']['models']['kokoro']['path']
 torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
 
-MODEL_PATH = "/mnt/models/openai/whisper-large-v3-turbo"
+MODEL_PATH = CONFIG['server']['models']['whisper']['path']
 
 print(f"Device set to use {device}")
 print("Loading ASR model and processor...")
@@ -57,7 +57,7 @@ asr_pipeline = pipeline(
 print("Loading TTS model...")
 # Load Kokoro TTS model
 tts_model = build_model(f'{KOKORO_PATH}/kokoro-v0_19.pth', device)
-VOICE_NAME = 'af'  # Default voice (50-50 mix of Bella & Sarah)
+VOICE_NAME = CONFIG['server']['models']['kokoro']['voice_name']  # Load voice name from config
 tts_voicepack = torch.load(f'{KOKORO_PATH}/voices/{VOICE_NAME}.pt', weights_only=True).to(device)
 
 from kokoro import generate
@@ -374,9 +374,11 @@ async def transcribe_audio(websocket):
 ################################################################################
 
 async def main():
-    # Start the server on port 8765
-    async with websockets.serve(transcribe_audio, "0.0.0.0", 8765):
-        print("WebSocket server started on ws://0.0.0.0:8765")
+    # Start the server using config
+    host = "0.0.0.0"  # Always bind to all interfaces
+    port = CONFIG['server']['websocket']['port']
+    async with websockets.serve(transcribe_audio, host, port):
+        print(f"WebSocket server started on ws://{host}:{port}")
         await asyncio.Future()  # keep running
 
 if __name__ == "__main__":
