@@ -68,12 +68,26 @@ from kokoro import generate
 
 class AudioServer:
     def __init__(self):
+        # Load configuration first
+        with open('config.json', 'r') as f:
+            self.config = json.load(f)
+            
+        # Initialize audio core with safe defaults
         self.audio_core = AudioCore()
+        self.audio_core.noise_floor = -96.0  # Safe default until client connects
+        self.audio_core.min_floor = -96.0
+        self.audio_core.max_floor = -36.0  # 60dB range
+        self.audio_core.rms_level = -96.0
+        self.audio_core.peak_level = -96.0
+        
         # Voice filtering configuration
         self.enable_voice_filtering = False  # Default to disabled
         
+        # Client's calibrated noise floor (will be set when client connects)
+        self.client_noise_floor = -96.0  # Start with safe default
+        
         # Pre-roll buffer for catching speech starts
-        self.preroll_duration = 0.5  # seconds (increased for better phrase capture)
+        self.preroll_duration = self.config['speech_detection']['preroll_duration']
         self.preroll_samples = int(16000 * self.preroll_duration)  # at 16kHz
         self.preroll_buffer = deque(maxlen=self.preroll_samples)
         self.last_speech_end = 0  # timestamp of last speech end
@@ -82,9 +96,9 @@ class AudioServer:
         self.current_voice_profile = None
         self.voice_profile_timestamp = None
         
-        # Speech detection parameters
-        self.min_speech_duration = 0.5  # seconds (increased for better phrase detection)
-        self.max_silence_duration = 0.8  # seconds of silence before ending speech
+        # Speech detection parameters from config
+        self.min_speech_duration = self.config['speech_detection']['min_speech_duration']
+        self.max_silence_duration = self.config['speech_detection']['max_silence_duration']
         self.speech_start_time = 0
         self.last_speech_level = -96.0
         
@@ -338,7 +352,35 @@ async def transcribe_audio(websocket):
                     was_speech = False
 
             elif isinstance(message, str):
-                if message.strip() == "VOICE_FILTER_ON":
+                if message.startswith("NOISE_FLOOR:"):
+                    try:
+                        noise_floor = float(message.split(":")[1])
+                        if noise_floor > -120 and noise_floor < 0:  # Validate reasonable range
+                            server.client_noise_floor = float(noise_floor)
+                            print(f"\nReceived client noise floor: {noise_floor:.1f} dB")
+                            
+                            try:
+                                # Update AudioCore's noise floor with explicit float conversions
+                                server.audio_core.noise_floor = float(noise_floor)
+                                server.audio_core.min_floor = float(noise_floor - 5)  # Allow some variation below
+                                server.audio_core.max_floor = float(noise_floor + 45)  # Allow speech to be well above
+                                
+                                print("Updated server speech detection thresholds")
+                                
+                                # Send ready response to client
+                                await websocket.send("READY")
+                                print("Sent ready response to client")
+                                
+                            except Exception as e:
+                                print(f"Error updating audio levels: {e}")
+                                await websocket.send("ERROR:Failed to update audio levels")
+                        else:
+                            print(f"\nWarning: Received invalid noise floor value: {noise_floor} dB")
+                            await websocket.send("ERROR:Invalid noise floor value")
+                    except Exception as e:
+                        print(f"Error processing noise floor message: {e}")
+                        await websocket.send("ERROR:Failed to process noise floor")
+                elif message.strip() == "VOICE_FILTER_ON":
                     server.enable_voice_filtering = True
                     print("\nVoice filtering enabled")
                 elif message.strip() == "VOICE_FILTER_OFF":
@@ -367,7 +409,20 @@ async def transcribe_audio(websocket):
     except Exception as e:
         print(f"Server error: {e}")
     finally:
-        print("Exiting transcribe loop.")
+        try:
+            # Clean up audio resources
+            if server and server.audio_core:
+                server.audio_core.close()
+                
+            # Clear buffers
+            if audio_buffer:
+                audio_buffer.clear()
+            
+            print("Cleaned up server resources")
+        except Exception as e:
+            print(f"Error during cleanup: {e}")
+        finally:
+            print("Exiting transcribe loop.")
 
 ################################################################################
 # MAIN SERVER ENTRY POINT

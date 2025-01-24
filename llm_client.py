@@ -24,10 +24,10 @@ class LLMClient:
             base_url=self.config["llm"]["api_base"],
             api_key=api_key
         )
-        # Initialize conversation history
+        # Initialize conversation settings from config
         self.conversation_history: List[Dict[str, str]] = []
         self.last_message_time: float = 0
-        self.context_timeout: float = 180  # 3 minutes in seconds
+        self.context_timeout: float = self.config["llm"]["conversation"]["context_timeout"]
         
     def _load_config(self, config_path: str) -> dict:
         """Load configuration from JSON file."""
@@ -95,8 +95,8 @@ class LLMClient:
             stream = await self.client.chat.completions.create(
                 model=self.config["llm"]["model_path"],
                 messages=messages,
-                temperature=0.7,
-                max_tokens=1024,  # Increased from 150 to allow longer responses
+                temperature=self.config["llm"]["conversation"]["temperature"],
+                max_tokens=self.config["llm"]["conversation"]["response_max_tokens"],
                 stream=True
             )
             
@@ -137,7 +137,6 @@ class LLMClient:
             self.conversation_history.append({"role": "assistant", "content": full_response})
 
             # Check token count and trim history if needed
-            MAX_TOKENS = 8000
             while True:
                 # Get all messages including system prompt
                 all_messages = [{"role": "system", "content": system_prompt}]
@@ -146,7 +145,7 @@ class LLMClient:
                 # Estimate total tokens
                 total_tokens = estimate_messages_tokens(all_messages)
                 
-                if total_tokens <= MAX_TOKENS:
+                if total_tokens <= self.config["llm"]["conversation"]["max_tokens"]:
                     break
                     
                 # Remove oldest exchange (user + assistant messages) if we're over the limit
