@@ -1,5 +1,5 @@
 """
-Tkinter-based audio control window with professional-grade UI elements
+Tkinter-based audio control interface with professional-grade UI elements
 and proper threading considerations for real-time audio visualization.
 """
 
@@ -8,34 +8,45 @@ from tkinter import ttk
 import queue
 import sounddevice as sd
 import numpy as np
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Callable
 
-class VolumeWindow:
-    def __init__(self, device_name: Optional[str] = None):
+class AudioInterface:
+    def __init__(self, 
+                 input_device_name: Optional[str] = None,
+                 output_device_name: Optional[str] = None,
+                 on_input_change: Optional[Callable[[str], None]] = None,
+                 on_output_change: Optional[Callable[[str], None]] = None):
         """
-        Initialize the Tkinter-based volume window.
+        Initialize the Tkinter-based audio interface.
         
         Args:
-            device_name: Initial audio device name to display
+            input_device_name: Initial input device name to display
+            output_device_name: Initial output device name to display
+            on_input_change: Callback when input device changes
+            on_output_change: Callback when output device changes
         """
         # Initialize state
         self.running = True
         self.has_gui = True
         self.current_volume = 0
-        self.device_name = device_name or "No device selected"
+        self.input_device_name = input_device_name or "No device selected"
+        self.output_device_name = output_device_name or "No device selected"
+        self.on_input_change = on_input_change
+        self.on_output_change = on_output_change
         
         # Create queues for thread-safe communication
         self.volume_queue = queue.Queue()
-        self.device_queue = queue.Queue()
+        self.input_device_queue = queue.Queue()
+        self.output_device_queue = queue.Queue()
         
         try:
             # Initialize GUI on main thread
             self._init_gui()
-            print("\nVolume control window opened successfully")
+            print("\nAudio interface opened successfully")
             
         except Exception as e:
             print(f"\nWarning: Could not create GUI window ({e})")
-            print("Volume meter will not be displayed")
+            print("Audio interface will not be displayed")
             self.running = False
             self.has_gui = False
     
@@ -45,22 +56,13 @@ class VolumeWindow:
         self.root = tk.Tk()
         self.root.title("Audio Control")
         self.root.geometry("400x300")
-        self.root.configure(bg='white')  # Set window background
-        
         # Configure grid
         self.root.grid_columnconfigure(0, weight=1)
         
-        # Style configuration
-        self.style = ttk.Style()
-        self.style.configure("TProgressbar", thickness=15)
-        self.style.configure("TLabelframe", background="white")
-        self.style.configure("TLabelframe.Label", background="white")
-        self.style.configure("TFrame", background="white")
-        
         # Create and configure frames
-        self._create_device_frame()
+        self._create_input_device_frame()
+        self._create_output_device_frame()
         self._create_volume_frame()
-        self._create_control_frame()
         
         # Set up periodic updates
         self._schedule_updates()
@@ -68,36 +70,56 @@ class VolumeWindow:
         # Handle window close
         self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
     
-    def _create_device_frame(self):
-        """Create frame for device selection"""
-        device_frame = ttk.LabelFrame(self.root, text="Audio Device", padding=10)
-        device_frame.grid(row=0, column=0, padx=10, pady=5, sticky="ew")
+    def _create_input_device_frame(self):
+        """Create frame for input device selection"""
+        input_frame = ttk.LabelFrame(self.root, text="Input Device", padding=5)
+        input_frame.grid(row=0, column=0, padx=10, pady=5, sticky="ew")
         
         # Get list of input devices
         devices = self._get_input_devices()
         
         # Device selection dropdown
-        self.device_var = tk.StringVar(value=self.device_name)
-        self.device_combo = ttk.Combobox(
-            device_frame, 
-            textvariable=self.device_var,
+        self.input_device_var = tk.StringVar(value=self.input_device_name)
+        self.input_device_combo = ttk.Combobox(
+            input_frame, 
+            textvariable=self.input_device_var,
             values=devices,
             state="readonly",
             width=40
         )
-        self.device_combo.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
-        self.device_combo.bind('<<ComboboxSelected>>', self._on_device_change)
+        self.input_device_combo.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
+        self.input_device_combo.bind('<<ComboboxSelected>>', self._on_input_device_change)
+
+    def _create_output_device_frame(self):
+        """Create frame for output device selection"""
+        output_frame = ttk.LabelFrame(self.root, text="Output Device", padding=5)
+        output_frame.grid(row=1, column=0, padx=10, pady=5, sticky="ew")
+        
+        # Get list of output devices
+        devices = self._get_output_devices()
+        
+        # Device selection dropdown
+        self.output_device_var = tk.StringVar(value=self.output_device_name)
+        self.output_device_combo = ttk.Combobox(
+            output_frame, 
+            textvariable=self.output_device_var,
+            values=devices,
+            state="readonly",
+            width=40
+        )
+        self.output_device_combo.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
+        self.output_device_combo.bind('<<ComboboxSelected>>', self._on_output_device_change)
     
     def _create_volume_frame(self):
         """Create frame for volume visualization"""
-        volume_frame = ttk.LabelFrame(self.root, text="Volume Level", padding=10)
-        volume_frame.grid(row=1, column=0, padx=10, pady=5, sticky="ew")
+        volume_frame = ttk.LabelFrame(self.root, text="Microphone Input Level", padding=5)
+        volume_frame.grid(row=2, column=0, padx=10, pady=5, sticky="ew")
         
         # Volume progress bar
         self.volume_bar = ttk.Progressbar(
             volume_frame,
             orient="horizontal",
-            length=300,
+            length=250,
             mode="determinate"
         )
         self.volume_bar.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
@@ -105,32 +127,6 @@ class VolumeWindow:
         # Volume label
         self.volume_label = ttk.Label(volume_frame, text="0%")
         self.volume_label.grid(row=1, column=0, padx=5, pady=5)
-    
-    def _create_control_frame(self):
-        """Create frame for control buttons"""
-        control_frame = ttk.LabelFrame(self.root, text="Controls", padding=10)
-        control_frame.grid(row=2, column=0, padx=10, pady=5, sticky="ew")
-        
-        # Button frame for organization
-        button_frame = ttk.Frame(control_frame)
-        button_frame.grid(row=0, column=0, sticky="ew")
-        button_frame.grid_columnconfigure((0, 1), weight=1)
-        
-        # Control buttons
-        self.start_button = ttk.Button(
-            button_frame,
-            text="Start",
-            command=self._on_start
-        )
-        self.start_button.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
-        
-        self.stop_button = ttk.Button(
-            button_frame,
-            text="Stop",
-            command=self._on_stop,
-            state="disabled"
-        )
-        self.stop_button.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
     
     def _schedule_updates(self):
         """Schedule periodic UI updates"""
@@ -157,12 +153,21 @@ class VolumeWindow:
         except queue.Empty:
             pass
         
-        # Handle device updates
+        # Handle input device updates
         try:
             while True:
-                device = self.device_queue.get_nowait()
-                self.device_var.set(device)
-                self.device_queue.task_done()
+                device = self.input_device_queue.get_nowait()
+                self.input_device_var.set(device)
+                self.input_device_queue.task_done()
+        except queue.Empty:
+            pass
+
+        # Handle output device updates
+        try:
+            while True:
+                device = self.output_device_queue.get_nowait()
+                self.output_device_var.set(device)
+                self.output_device_queue.task_done()
         except queue.Empty:
             pass
     
@@ -170,35 +175,43 @@ class VolumeWindow:
         """Get list of available input devices"""
         devices = []
         try:
-            for i, device in enumerate(sd.query_devices()):
+            for device in sd.query_devices():
                 if device['max_input_channels'] > 0:
                     devices.append(device['name'])
         except Exception as e:
             print(f"Error getting input devices: {e}")
         return devices
+
+    def _get_output_devices(self) -> List[str]:
+        """Get list of available output devices"""
+        devices = []
+        try:
+            for device in sd.query_devices():
+                if device['max_output_channels'] > 0:
+                    devices.append(device['name'])
+        except Exception as e:
+            print(f"Error getting output devices: {e}")
+        return devices
     
-    def _on_device_change(self, event):
-        """Handle device selection change"""
-        new_device = self.device_var.get()
-        print(f"\nSelected device: {new_device}")
-        # Notify main thread of device change
-        self.device_name = new_device
-    
-    def _on_start(self):
-        """Handle start button click"""
-        self.start_button["state"] = "disabled"
-        self.stop_button["state"] = "normal"
-        self.device_combo["state"] = "disabled"
-    
-    def _on_stop(self):
-        """Handle stop button click"""
-        self.start_button["state"] = "normal"
-        self.stop_button["state"] = "disabled"
-        self.device_combo["state"] = "readonly"
+    def _on_input_device_change(self, event):
+        """Handle input device selection change"""
+        new_device = self.input_device_var.get()
+        print(f"\nSelected input device: {new_device}")
+        self.input_device_name = new_device
+        if self.on_input_change:
+            self.on_input_change(new_device)
+
+    def _on_output_device_change(self, event):
+        """Handle output device selection change"""
+        new_device = self.output_device_var.get()
+        print(f"\nSelected output device: {new_device}")
+        self.output_device_name = new_device
+        if self.on_output_change:
+            self.on_output_change(new_device)
     
     def _on_closing(self):
         """Handle window closing"""
-        print("\nClosing volume control window...")
+        print("\nClosing audio interface window...")
         self.running = False
         self.has_gui = False
         self.root.quit()
@@ -243,7 +256,7 @@ class VolumeWindow:
         """
         Close the window and clean up resources.
         """
-        print("[Volume Window] VolumeWindow.close() called - start")
+        print("[Audio Interface] AudioInterface.close() called - start")
         if self.running and self.has_gui:
             self.running = False
             self.has_gui = False
@@ -252,4 +265,4 @@ class VolumeWindow:
                 self.root.destroy()
             except Exception as e:
                 print(f"Error closing window: {e}")
-        print("[Volume Window] VolumeWindow.close() finished")
+        print("[Audio Interface] AudioInterface.close() finished")

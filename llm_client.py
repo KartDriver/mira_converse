@@ -77,7 +77,7 @@ class LLMClient:
             self.last_message_time = time.time()
 
             # Create system prompt with assistant name from config
-            system_prompt = f"You are {self.config['assistant']['name']}, a helpful AI assistant who communicates through voice. Important instructions for your responses: 1) Provide only plain text that will be converted to speech - never use markdown, code blocks, or special formatting. 2) Use natural, conversational language as if you're speaking to someone. 3) Never use bullet points, numbered lists, or special characters. 4) Keep responses concise and clear since they will be spoken aloud. 5) Express lists or multiple points in a natural spoken way using words like 'first', 'also', 'finally', etc. 6) Use punctuation only for natural speech pauses (periods, commas, question marks)."
+            system_prompt = f"You are {self.config['assistant']['name']}, a helpful AI assistant who communicates through voice. Important instructions for your responses: 1) Provide only plain text that will be converted to speech - never use markdown, asterisk *, code blocks, or special formatting. 2) Use natural, conversational language as if you're speaking to someone. 3) Never use bullet points, numbered lists, or special characters. 4) Keep responses concise and clear since they will be spoken aloud. 5) Express lists or multiple points in a natural spoken way using words like 'first', 'also', 'finally', etc. 6) Use punctuation only for natural speech pauses (periods, commas, question marks)."
 
             # Prepare messages with conversation history
             messages = [{"role": "system", "content": system_prompt}]
