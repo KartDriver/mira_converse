@@ -126,7 +126,7 @@ class AudioServer:
         if now - self.last_speech_end > self.preroll_duration:
             return np.array(self.preroll_buffer)
         return np.array([])
-
+        
     def should_process_transcript(self, transcript, confidence, speech_duration):
         """Determine if transcript should be processed based on sophisticated rules"""
         if not transcript:
@@ -168,6 +168,34 @@ class AudioServer:
         
         return True
 
+class ClientSettingsManager:
+    """
+    Manages client-specific AudioServer instances.
+    """
+    def __init__(self):
+        self.client_settings = {}
+
+    def get_audio_server(self, client_id):
+        """
+        Retrieves or creates an AudioServer instance for a given client ID.
+        """
+        if client_id not in self.client_settings:
+            print(f"Creating new AudioServer instance for client ID: {client_id}")
+            self.client_settings[client_id] = AudioServer()
+        return self.client_settings[client_id]
+
+    def remove_client(self, client_id):
+        """
+        Removes a client's AudioServer instance when they disconnect.
+        """
+        if client_id in self.client_settings:
+            print(f"Removing AudioServer instance for client ID: {client_id}")
+            del self.client_settings[client_id]
+
+# Global ClientSettingsManager instance
+client_settings_manager = ClientSettingsManager()
+
+
 ################################################################################
 # WEBSOCKET HANDLER
 ################################################################################
@@ -187,9 +215,12 @@ async def process_audio_chunk(websocket, chunk, fade_in=None, fade_out=None, fad
     except Exception as e:
         print(f"Error processing audio chunk: {e}")
 
-async def handle_tts(websocket, text):
+async def handle_tts(websocket, text, client_id):
     """Handle text-to-speech request and stream audio back to client"""
     try:
+        # Get client-specific AudioServer instance
+        server = client_settings_manager.get_audio_server(client_id)
+
         # Start TTS generation immediately
         print(f"\n[TTS] Generating audio for text chunk: {text[:50]}...")
         
@@ -248,8 +279,8 @@ async def handle_tts(websocket, text):
         await websocket.send("TTS_ERROR")
 
 
-def verify_api_key(websocket):
-    """Verify the API key from the websocket connection URI"""
+def verify_api_key(websocket, client_id):
+    """Verify the API key and client ID from the websocket connection URI"""
     try:
         # Get server API key from config
         server_api_key = CONFIG['server']['websocket']['api_key']
@@ -257,36 +288,14 @@ def verify_api_key(websocket):
             print("No server API key configured")
             return False
 
-        # Try to get path from transport
-        transport = websocket.transport
-        if hasattr(transport, '_sock'):  # Check if _sock attribute exists
-            sock = transport._sock
-            if hasattr(sock, 'getpeername'): # Check if getpeername exists
-                peer_address = sock.getpeername()
-                if peer_address:
-                    host, port = peer_address[:2] # Extract host and port
-                    # Reconstruct URI path (this might be incomplete)
-                    path_string = f"?api_key={websocket.request.headers.get('api_key', '')}" # Try headers from request
-                    print(f"Reconstructed path from transport: {path_string}")
-                else:
-                    print("Could not get peer address from socket")
-                    return False
-            else:
-                print("Socket does not have getpeername method")
-                return False
-        else:
-            print("Transport does not have _sock attribute")
-            return False
-
-
-        path_string = None # Initialize path_string to None
+        # Verify API Key
+        path_string = None
         try: # Try to get path from websocket.request
             path_string = websocket.request.path
             print(f"Path from websocket.request.path: {path_string}")
         except AttributeError:
             print("websocket.request.path not available")
             pass # It's okay if websocket.request.path is not available
-
 
         if not path_string: # Fallback to websocket.path if transport method fails
             try:
@@ -295,8 +304,7 @@ def verify_api_key(websocket):
             except AttributeError:
                 print("websocket.path also not available")
                 return False
-
-
+        
         # Parse the path to get query parameters
         parsed_uri = urlparse(path_string)
         query_params = parse_qs(parsed_uri.query)
@@ -309,10 +317,24 @@ def verify_api_key(websocket):
         client_api_key = client_api_key_list[0]  # Take the first API key if multiple are present
 
         # Verify keys match
-        return client_api_key == server_api_key
+        if client_api_key != server_api_key:
+            print("Client API key does not match server API key")
+            return False
+
+        # Verify Client ID
+        client_id_list = query_params.get('client_id', [])
+        if not client_id_list:
+            print("No Client ID provided in URI query parameters")
+            return False
+        client_id_uri = client_id_list[0]
+        if client_id_uri != str(client_id): # Compare string representations
+            print(f"Client ID in URI does not match: expected {client_id}, got {client_id_uri}")
+            return False
+        
+        return True
 
     except Exception as e:
-        print(f"Error verifying API key from URI: {e}")
+        print(f"Error verifying API key and client ID from URI: {e}")
         return False
 
 
@@ -321,20 +343,36 @@ async def transcribe_audio(websocket):
     Receives audio chunks in raw PCM form, processes them with professional
     audio techniques, and runs speech recognition when appropriate.
     """
-    # Verify API key
-    if not verify_api_key(websocket):
-        print("Client connection rejected: Invalid API key")
-        await websocket.send("AUTH_FAILED")
-        return
-        
-    # Send authentication success
-    await websocket.send("AUTH_OK")
-    print("Client authenticated. Ready to receive audio chunks...")
-    server = AudioServer()
+    client_id = None  # Initialize client_id here
+    server = None
     audio_buffer = None
     was_speech = False
 
     try:
+        # Extract client ID from URI
+        path_string = websocket.request.path if hasattr(websocket.request, 'path') else websocket.path
+        parsed_uri = urlparse(path_string)
+        query_params = parse_qs(parsed_uri.query)
+        client_id_list = query_params.get('client_id', [])
+        if not client_id_list:
+            print("Client ID missing from URI.")
+            await websocket.close(code=4000, reason="Client ID required")  # Close connection with custom code
+            return
+        client_id = client_id_list[0]
+
+        # Verify API key and client ID
+        if not verify_api_key(websocket, client_id):
+            print("Client connection rejected: Invalid API key or Client ID")
+            await websocket.send("AUTH_FAILED")
+            return
+        
+        # Send authentication success
+        await websocket.send("AUTH_OK")
+        print(f"Client authenticated. Client ID: {client_id}. Ready to receive audio chunks...")
+
+        # Get client-specific AudioServer instance
+        server = client_settings_manager.get_audio_server(client_id)
+
         async for message in websocket:
             if isinstance(message, bytes):
                 try:
@@ -411,7 +449,6 @@ async def transcribe_audio(websocket):
                                             transcript_str = str(transcript)
                                             print(f"\nTranscript: '{transcript_str}' (confidence: {confidence:.2f}, duration: {speech_duration:.2f}s)")
                                             await websocket.send(transcript_str)
-                                                
                                         except Exception as e:
                                             print(f"Error processing transcript: {e}")
                                     else:
@@ -432,10 +469,17 @@ async def transcribe_audio(websocket):
             elif isinstance(message, str):
                 if message.startswith("NOISE_FLOOR:"):
                     try:
-                        noise_floor = float(message.split(":")[1])
+                        parts = message.split(":")
+                        noise_floor = float(parts[1])
+                        message_client_id = parts[2] if len(parts) > 2 else None
+
+                        if message_client_id != client_id:
+                            print(f"Warning: Client ID mismatch in NOISE_FLOOR message. Expected {client_id}, got {message_client_id}")
+                            continue # Skip processing if client IDs don't match
+
                         if noise_floor > -120 and noise_floor < 0:  # Validate reasonable range
                             server.client_noise_floor = float(noise_floor)
-                            print(f"\nReceived client noise floor: {noise_floor:.1f} dB")
+                            print(f"\nReceived client noise floor for client ID {client_id}: {noise_floor:.1f} dB")
                             
                             try:
                                 # Update AudioCore's noise floor with explicit float conversions
@@ -460,59 +504,57 @@ async def transcribe_audio(websocket):
                         await websocket.send("ERROR:Failed to process noise floor")
                 elif message.strip() == "VOICE_FILTER_ON":
                     server.enable_voice_filtering = True
-                    print("\nVoice filtering enabled")
+                    print("\nVoice filtering enabled for client ID {client_id}")
                 elif message.strip() == "VOICE_FILTER_OFF":
                     server.enable_voice_filtering = False
                     server.current_voice_profile = None
                     server.voice_profile_timestamp = None
-                    print("\nVoice filtering disabled")
+                    print("\nVoice filtering disabled for client ID {client_id}")
                 elif message.strip() == "RESET":
                     audio_buffer = bytearray()
                     was_speech = False
-                    print("Buffer has been reset by client request.")
+                    print(f"Buffer has been reset by client request for client ID {client_id}.")
                 elif message.strip() == "EXIT":
-                    print("Client requested exit. Closing connection.")
+                    print(f"Client requested exit. Closing connection for client ID {client_id}.")
                     break
                 elif message.startswith("TTS:"):
                     # Handle TTS request asynchronously
                     text = message[4:].strip()  # Remove TTS: prefix
-                    print(f"TTS Request: {text}")
+                    print(f"TTS Request for client ID {client_id}: {text}")
                     # Create task for TTS processing to run concurrently
-                    asyncio.create_task(handle_tts(websocket, text))
+                    asyncio.create_task(handle_tts(websocket, text, client_id))
                 else:
-                    print(f"Received unknown text message: {message}")
+                    print(f"Received unknown text message from client ID {client_id}: {message}")
 
     except websockets.ConnectionClosed as e:
-        print(f"Client disconnected. Reason: {e}")
+        print(f"Client disconnected. Client ID: {client_id}, Reason: {e}")
     except Exception as e:
-        print(f"Server error: {e}")
+        print(f"Server error for client ID {client_id}: {e}")
     finally:
-        try:
-            # Clean up audio resources
-            if server and server.audio_core:
-                server.audio_core.close()
-                
-            # Clear buffers
-            if audio_buffer:
-                audio_buffer.clear()
-            
-            print("Cleaned up server resources")
-        except Exception as e:
-            print(f"Error during cleanup: {e}")
-        finally:
-            print("Exiting transcribe loop.")
+        if server and server.audio_core:
+            server.audio_core.close()
+        if client_id:
+            client_settings_manager.remove_client(client_id)
+        if audio_buffer:
+            audio_buffer.clear()
+        print(f"Cleaned up server resources for client ID {client_id}")
+
 
 ################################################################################
 # MAIN SERVER ENTRY POINT
 ################################################################################
 
 async def main():
-    # Start the server using config
-    host = "0.0.0.0"  # Always bind to all interfaces
-    port = CONFIG['server']['websocket']['port']
-    async with websockets.serve(transcribe_audio, host, port):
-        print(f"WebSocket server started on ws://{host}:{port}")
-        await asyncio.Future()  # keep running
+    try:
+        # Start the server using config
+        host = "0.0.0.0"  # Always bind to all interfaces
+        port = CONFIG['server']['websocket']['port']
+        async with websockets.serve(transcribe_audio, host, port):
+            print(f"WebSocket server started on ws://{host}:{port}")
+            await asyncio.Future()  # keep running
+    except Exception as e:
+        print(f"Server startup error: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     asyncio.run(main())

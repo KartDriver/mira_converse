@@ -23,6 +23,7 @@ import samplerate
 import sys
 import os
 import platform
+import uuid  # Import uuid
 from collections import deque
 import tkinter as tk
 import threading
@@ -44,7 +45,10 @@ with open('config.json', 'r') as f:
 API_KEY = CONFIG['server']['websocket']['api_key']
 SERVER_HOST = CONFIG['server']['websocket']['host']
 SERVER_PORT = CONFIG['server']['websocket']['port']
-SERVER_URI = f"ws://{SERVER_HOST}:{SERVER_PORT}?api_key={API_KEY}"
+
+# Generate unique client ID
+CLIENT_ID = uuid.uuid4()
+SERVER_URI = f"ws://{SERVER_HOST}:{SERVER_PORT}?api_key={API_KEY}&client_id={CLIENT_ID}"  # Add client_id to URI
 
 # Trigger word configuration
 TRIGGER_WORD = CONFIG['assistant']['name']
@@ -279,7 +283,7 @@ class AsyncThread(threading.Thread):
 
             # Send calibrated noise floor to server and wait for acknowledgment
             print(f"\nSending calibrated noise floor to server: {audio_core.noise_floor:.1f} dB")
-            await self.websocket.send(f"NOISE_FLOOR:{audio_core.noise_floor}")
+            await self.websocket.send(f"NOISE_FLOOR:{audio_core.noise_floor}:{CLIENT_ID}")  # Include client ID in NOISE_FLOOR message
 
             # Wait for server to be ready (with timeout)
             try:
