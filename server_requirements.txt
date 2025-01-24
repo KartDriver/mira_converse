@@ -1,0 +1,6 @@
+websockets>=11.0.3
+torch>=2.0.0
+numpy>=1.24.0
+transformers>=4.30.0
+scipy>=1.11.0
+safetensors>=0.3.1
