@@ -11,11 +11,11 @@
         "gpu_device": "auto",
         "models": {
             "whisper": {
-                "path": "/path/to/whisper/model"
+                "path": "models/whisper-large-v3-turbo"
             },
             "kokoro": {
-                "path": "/path/to/kokoro/model",
-                "voice_name": "en"
+                "path": "models/Kokoro-82M",
+                "voice_name": "bf_emma"
             }
         }
     },

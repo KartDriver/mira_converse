@@ -33,7 +33,7 @@ A real-time voice interaction system that combines speech recognition, natural l
 
 1. Clone the repository:
 ```bash
-git clone [repository-url]
+git clone git@github.com:KartDriver/audio_chat.git
 cd audio_chat
 ```
 
@@ -42,10 +42,21 @@ cd audio_chat
 pip install -r server_requirements.txt
 ```
 
-3. Set up the required models:
+3. Install required libraries:
+```bash
+sudo apt-get install libasound-dev portaudio19-dev libportaudio2 libportaudiocpp0 espeak
+```
+
+4. Set up the required models (for server):
    - Download the Whisper speech-to-text model from [HuggingFace](https://huggingface.co/openai/whisper-large-v3-turbo)
    - Download the Kokoro text-to-speech model from [HuggingFace](https://huggingface.co/hexgrad/Kokoro-82M)
-   - Download the desired voice packs for Kokoro from the same repository
+   
+```bash
+huggingface-cli download openai/whisper-large-v3-turbo --local-dir models/whisper-large-v3-turbo
+huggingface-cli download hexgrad/Kokoro-82M --local-dir models/Kokoro-82M
+```
+
+5. Create a config.json (using default_config.json as template)
    - Create your configuration file (see Configuration section below)
    - Set the downloaded model paths in your config.json
 
@@ -53,11 +64,11 @@ Note: The models are large files (several GB) and require sufficient disk space.
 ```json
 "models": {
     "whisper": {
-        "path": "/path/to/whisper-large-v3-turbo"
+        "path": "models/whisper-large-v3-turbo"
     },
     "kokoro": {
-        "path": "/path/to/Kokoro-82M",
-        "voice_name": "af"  // Choose your preferred voice pack
+        "path": "models/Kokoro-82M",
+        "voice_name": "bf_emma"  // Look in models/Kokoro-82M/voices/
     }
 }
 ```
@@ -67,6 +78,11 @@ Note: The models are large files (several GB) and require sufficient disk space.
 1. Install client dependencies:
 ```bash
 pip install -r client_requirements.txt
+```
+
+2. Install required libraries:
+```bash
+sudo apt-get install libasound-dev portaudio19-dev libportaudio2 libportaudiocpp0 espeak libsamplerate0 libsamplerate0-dev python3-tk
 ```
 
 ## Configuration
