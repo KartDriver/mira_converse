@@ -1,6 +1,12 @@
 """
-Core audio processing functionality with professional-grade audio processing,
-noise floor estimation, and speech detection.
+Core audio processing functionality with robust noise floor calibration,
+professional audio envelope following, and improved speech detection.
+
+Key Points:
+1. We store the config in 'self.config' so we can reference it in process_audio.
+2. We read 'end_silence_duration' from config['speech_detection']['end_silence_duration'].
+3. We read open/close thresholds from config['speech_detection']['thresholds']['open'/'close'].
+4. Speech ends only after detecting the required duration of silence.
 """
 
 import json
@@ -11,603 +17,457 @@ from scipy import signal
 import sounddevice as sd
 import platform
 import warnings
-import io
-import soundfile as sf
 
 class AudioCore:
     @property
     def noise_floor(self):
         return self._noise_floor
-            
+
     @noise_floor.setter
     def noise_floor(self, value):
         try:
             if value is not None:
                 val = float(value)
-                # Allow slightly lower values but clamp to safe range
-                self._noise_floor = max(-150.0, min(val, -20.0))
+                # Hard clamp to avoid absurd values
+                self._noise_floor = max(-150.0, min(val, 20.0))
+            else:
+                self._noise_floor = -96.0
         except Exception as e:
             print(f"Error setting noise floor: {e}")
-            self._noise_floor = -96.0  # Safe default
-            
+            self._noise_floor = -96.0
+
     @property
     def min_floor(self):
         return self._min_floor
-            
+
     @min_floor.setter
     def min_floor(self, value):
         try:
             if value is not None:
                 val = float(value)
-                # Allow slightly lower values but clamp to safe range
-                self._min_floor = max(-150.0, min(val, -20.0))
+                self._min_floor = max(-150.0, min(val, 20.0))
+            else:
+                self._min_floor = -96.0
         except Exception as e:
             print(f"Error setting min floor: {e}")
-            self._min_floor = -96.0  # Safe default
-            
+            self._min_floor = -96.0
+
     @property
     def max_floor(self):
         return self._max_floor
-            
+
     @max_floor.setter
     def max_floor(self, value):
         try:
             if value is not None:
                 val = float(value)
-                # Allow slightly higher values but clamp to safe range
-                self._max_floor = max(-100.0, min(val, 0.0))
+                self._max_floor = max(-150.0, min(val, 60.0))
+            else:
+                self._max_floor = -36.0
         except Exception as e:
             print(f"Error setting max floor: {e}")
-            self._max_floor = -36.0  # Safe default
-            
+            self._max_floor = -36.0
+
     @property
     def rms_level(self):
         return self._rms_level
-            
+
     @rms_level.setter
     def rms_level(self, value):
         try:
             if value is not None:
                 val = float(value)
-                # Allow slightly lower values but clamp to safe range
-                self._rms_level = max(-150.0, min(val, -20.0))
+                self._rms_level = max(-150.0, min(val, 20.0))
+            else:
+                self._rms_level = -96.0
         except Exception as e:
             print(f"Error setting RMS level: {e}")
-            self._rms_level = -96.0  # Safe default
-            
+            self._rms_level = -96.0
+
     @property
     def peak_level(self):
         return self._peak_level
-            
+
     @peak_level.setter
     def peak_level(self, value):
         try:
             if value is not None:
                 val = float(value)
-                # Allow slightly lower values but clamp to safe range
-                self._peak_level = max(-150.0, min(val, -20.0))
+                self._peak_level = max(-150.0, min(val, 20.0))
+            else:
+                self._peak_level = -96.0
         except Exception as e:
             print(f"Error setting peak level: {e}")
-            self._peak_level = -96.0  # Safe default
-            
+            self._peak_level = -96.0
+
     @property
     def current_db_rms(self):
         return self._current_db_rms
-            
+
     @current_db_rms.setter
     def current_db_rms(self, value):
         try:
             if value is not None:
                 val = float(value)
-                # Allow slightly lower values but clamp to safe range
-                self._current_db_rms = max(-150.0, min(val, -20.0))
+                self._current_db_rms = max(-150.0, min(val, 20.0))
+            else:
+                self._current_db_rms = -96.0
         except Exception as e:
             print(f"Error setting current RMS: {e}")
-            self._current_db_rms = -96.0  # Safe default
-            
+            self._current_db_rms = -96.0
+
     @property
     def current_db_peak(self):
         return self._current_db_peak
-            
+
     @current_db_peak.setter
     def current_db_peak(self, value):
         try:
             if value is not None:
                 val = float(value)
-                # Allow slightly lower values but clamp to safe range
-                self._current_db_peak = max(-150.0, min(val, -20.0))
+                self._current_db_peak = max(-150.0, min(val, 20.0))
+            else:
+                self._current_db_peak = -96.0
         except Exception as e:
             print(f"Error setting current peak: {e}")
-            self._current_db_peak = -96.0  # Safe default
-            
+            self._current_db_peak = -96.0
+
     def __init__(self):
-        # Load configuration
+        # Load config into self.config so we can reference it anywhere
         with open('config.json', 'r') as f:
-            config = json.load(f)
-        
-        # Audio stream state
+            self.config = json.load(f)
+
+        # Basic audio setup
         self.stream = None
         self.rate = None
         self.needs_resampling = None
-        
-        # Voice profile storage
-        self.voice_profile = None
-        self.profile_timestamp = None
-        self.profile_similarity_threshold = 0.3  # More permissive threshold for better trigger detection
-        
-        # Professional audio time constants from config
-        self.peak_attack = config['audio_processing']['time_constants']['peak_attack']
-        self.peak_release = config['audio_processing']['time_constants']['peak_release']
-        self.rms_attack = config['audio_processing']['time_constants']['rms_attack']
-        self.rms_release = config['audio_processing']['time_constants']['rms_release']
-        
-        # Level detection with safe defaults
+
+        # Extract time constants from config
+        self.peak_attack   = self.config['audio_processing']['time_constants']['peak_attack']
+        self.peak_release  = self.config['audio_processing']['time_constants']['peak_release']
+        self.rms_attack    = self.config['audio_processing']['time_constants']['rms_attack']
+        self.rms_release   = self.config['audio_processing']['time_constants']['rms_release']
+
+        # Initialize smoothed levels
         self._peak_level = -96.0
         self._rms_level = -96.0
         self._current_db_rms = -96.0
         self._current_db_peak = -96.0
         self.last_update = time.time()
-        
-        # Simple noise floor tracking with safe defaults
-        self._noise_floor = -96.0  # Start with safe default
-        self._min_floor = -96.0    # Start with safe default
-        self._max_floor = -36.0    # Start with safe default (60dB range)
-        
-        # Calibration state
+
+        # Noise floor init
+        self._noise_floor = -96.0
+        self._min_floor   = -96.0
+        self._max_floor   = -36.0
+
+        # Additional calibration tracking
+        self.noise_floor_ema = -96.0
+        self.ema_alpha = 0.01
         self.calibration_samples = []
         self.last_calibration = 0
-        self.CALIBRATION_INTERVAL = 5.0  # Seconds between recalibration checks
-        self.CALIBRATION_WINDOW = 1.0    # Seconds of samples to use for calibration
-        self.level_history = deque(maxlen=50)  # Short history for level stability check
-        
-        # Speech detection with hysteresis from config
-        self.speech_threshold_open = config['speech_detection']['thresholds']['open']
-        self.speech_threshold_close = config['speech_detection']['thresholds']['close']
+        self.CALIBRATION_INTERVAL = 30.0
+        self.CALIBRATION_WINDOW   = 2.0
+        self.level_history = deque(maxlen=50)
+
+        # Read gating thresholds from config
+        thresholds = self.config['speech_detection']['thresholds']
+        self.speech_threshold_open  = thresholds['open']   # e.g. 12 dB in config
+        self.speech_threshold_close = thresholds['close']  # e.g. 10 dB in config
+
         self.is_speaking = False
         self.hold_counter = 0
-        self.hold_samples = config['speech_detection']['hold_samples']
-        self.debug_last_state = False  # For state change logging
-        
-        # Pre-emphasis filter from config
-        self.pre_emphasis = config['speech_detection']['pre_emphasis']
+        self.debug_last_state = False
+
+        # We'll no longer rely solely on consecutive frames, but keep them if needed
+        self.consecutive_silence_needed = self.config['speech_detection']['hold_samples']
+        self.current_silence_frames = 0
+
+        # Ratio gating from config or defaults
+        self.open_ratio     = 1.3
+        self.close_ratio    = 1.1
+        self.ratio_override = 2.0
+
+        # Pre-emphasis from config
+        self.pre_emphasis = self.config['speech_detection']['pre_emphasis']
         self.prev_sample = 0.0
 
-        # Audio device configuration from config
-        self.CHUNK = config['audio_processing']['chunk_size']
-        self.CHANNELS = 1
-        self.DESIRED_RATE = config['audio_processing']['desired_rate']
+        # For client usage
+        audio_cfg = self.config['audio_processing']
+        self.CHUNK        = audio_cfg['chunk_size']
+        self.CHANNELS     = 1
+        self.DESIRED_RATE = audio_cfg['desired_rate']
+
+        self.debug_counter = 0
 
     def init_audio_device(self):
-        """Initialize audio device with proper configuration"""
+        """
+        Initialize audio device and perform a robust single-buffer calibration
+        by recording 4 seconds of audio continuously with sd.rec().
+        Discards the top 10% loudest frames and computes a robust low-percentile RMS as the noise floor.
+        Then opens a continuous InputStream for real-time capture.
+        """
         try:
-            # Print available devices for debugging
-            print("\nAvailable audio devices:")
+            print("\nListing audio devices:")
             print(sd.query_devices())
-            
-            # Find a suitable input device based on system
+
             system = platform.system().lower()
-            
-            # On Linux, try to suppress common ALSA warnings
             if system == 'linux':
                 warnings.filterwarnings("ignore", category=RuntimeWarning, module="sounddevice")
-            
-            # Try to find built-in microphone based on system
+
             devices = sd.query_devices()
             working_device = None
             device_info = None
-            
+
+            # Device selection logic
             for i, device in enumerate(devices):
                 if device['max_input_channels'] > 0:
                     device_name = device['name'].lower()
-                    
-                    # On macOS, prefer the built-in microphone
-                    if system == 'darwin' and 'macbook' in device_name and 'microphone' in device_name:
-                        print("\nSelected MacBook's built-in microphone")
+
+                    if system == 'darwin' and 'microphone' in device_name:
                         working_device = i
                         device_info = device
                         break
-                        
-                    # On Linux, prioritize AMD audio device for Lenovo laptops
-                    elif system == 'linux':
-                        # First preference: AMD audio device
-                        if 'acp' in device_name:
-                            print(f"\nSelected AMD audio device: {device['name']}")
+                    elif system == 'linux' and 'acp' in device_name:
+                        working_device = i
+                        device_info = device
+                        break
+
+                    # fallback: check if it's the default input device
+                    try:
+                        default_info = sd.query_default_device('input')
+                        if default_info[0] == i:
                             working_device = i
                             device_info = device
                             break
-                        # Second preference: Default device
-                        try:
-                            default_info = sd.query_default_device('input')
-                            if default_info[0] == i:
-                                print(f"\nSelected default ALSA device: {device['name']}")
-                                working_device = i
-                                device_info = device
-                                break
-                        except Exception:
-                            pass
-            
-            # Fall back to default input device if no specific device found
+                    except:
+                        pass
+
             if working_device is None:
+                # final fallback
                 try:
-                    default_device = sd.query_default_device('input')[0]
-                    device_info = sd.query_devices(default_device)
-                    working_device = default_device
+                    default_idx = sd.query_default_device('input')[0]
+                    device_info = sd.query_devices(default_idx)
+                    working_device = default_idx
                     print(f"\nUsing default input device: {device_info['name']}")
                 except Exception as e:
-                    print(f"Error getting default device: {e}")
-                    # Last resort: use first available input device
-                    for i, device in enumerate(devices):
-                        if device['max_input_channels'] > 0:
+                    print(f"No default input device found: {e}")
+                    for i, dev in enumerate(devices):
+                        if dev['max_input_channels'] > 0:
                             working_device = i
-                            device_info = device
-                            print(f"\nUsing first available input device: {device['name']}")
+                            device_info = dev
+                            print(f"\nUsing first available input device: {dev['name']}")
                             break
-            
+
             if working_device is None or device_info is None:
-                raise RuntimeError("No suitable input device found")
-            
-            # Configure stream parameters
+                raise RuntimeError("No suitable input device found.")
+
             rate = int(device_info['default_samplerate'])
-            needs_resampling = rate != self.DESIRED_RATE
-            
-            # Print detailed device info
+            needs_resampling = (rate != self.DESIRED_RATE)
+
             print("\nSelected device details:")
             print(f"  Name: {device_info['name']}")
             print(f"  Input channels: {device_info['max_input_channels']}")
             print(f"  Default samplerate: {rate}")
             print(f"  Low latency: {device_info['default_low_input_latency']}")
             print(f"  High latency: {device_info['default_high_input_latency']}")
-            
-            # Create input stream with optimal settings
+
+            # Ensure sd.rec() uses the selected device
+            sd.default.device = (working_device, None)
+
+            # Grab a 4-second buffer for calibration
+            calibration_duration = 4.0
+            frames_needed = int(rate * calibration_duration)
+
+            print(f"\nCalibrating noise floor for {calibration_duration}s. Please remain silent...")
+            audio_buffer = sd.rec(frames_needed, samplerate=rate,
+                                  channels=1, dtype='float32')
+            sd.wait()  # blocks until recording finishes
+
+            audio_buffer = audio_buffer.flatten()
+
+            # Build chunk-based RMS
+            chunk_size = 1024
+            chunk_rms_list = []
+            for i in range(0, len(audio_buffer), chunk_size):
+                block = audio_buffer[i : i + chunk_size]
+                if len(block) > 0:
+                    block_rms_db = self._rms_db(block)
+                    chunk_rms_list.append(block_rms_db)
+
+            if not chunk_rms_list:
+                raise ValueError("No samples captured during calibration.")
+
+            sorted_rms = np.sort(chunk_rms_list)
+            cutoff_index = int(0.90 * len(sorted_rms))
+            quiet_rms = sorted_rms[:cutoff_index]
+
+            if len(quiet_rms) < 10:
+                print(f"\nWARNING: Only found {len(quiet_rms)} 'quiet' frames.")
+                print("Using fallback noise floor of -55.0 dB.")
+                initial_floor = -55.0
+            else:
+                initial_floor = float(np.percentile(quiet_rms, 20))
+                print(f"\nCollected {len(chunk_rms_list)} total frames; {len(quiet_rms)} deemed quiet.")
+                print(f"Robust noise floor estimate (20th percentile): {initial_floor:.1f} dB")
+
+            # Optionally clamp extreme out-of-range floors
+            if initial_floor < -120.0 or initial_floor > 0.0:
+                print("Calibrated floor out of typical range, using fallback -55.0 dB.")
+                initial_floor = -55.0
+
+            self.noise_floor = initial_floor
+            self.min_floor   = initial_floor
+            self.max_floor   = initial_floor + 60
+            self.rms_level   = initial_floor
+            self.peak_level  = initial_floor
+
+            print(f"\nMicrophone calibration successful:")
+            print(f"  Noise Floor: {self.noise_floor:.1f} dB")
+            print(f"  Floor range: {self.min_floor:.1f} to {self.max_floor:.1f} dB")
+            print(f"  Sample rate: {rate} Hz")
+
+            # Now open the main stream for continuous capture
+            print("\nOpening main stream for recording...")
             stream = sd.InputStream(
                 device=working_device,
                 channels=1,
                 samplerate=rate,
                 dtype=np.float32,
                 blocksize=self.CHUNK,
-                latency='low'  # Use low latency for better responsiveness
+                latency='low'
             )
-            
-            print("\nStarting stream...")
             stream.start()
-            
-            # Verify stream is working and find minimum level over half a second
-            print("\nMeasuring minimum ambient level...")
-            chunks_for_half_second = int(rate / self.CHUNK / 2)  # Number of chunks in 0.5 seconds
-            min_rms = float('inf')
-            
-            # Take multiple samples and find the minimum RMS
-            retries = 3  # Allow a few retries to get valid samples
-            while retries > 0 and min_rms == float('inf'):
-                for _ in range(chunks_for_half_second):
-                    chunk = stream.read(self.CHUNK)[0]
-                    if not np.all(chunk == 0):  # Skip silent chunks
-                        rms = 20 * np.log10(np.sqrt(np.mean(chunk**2)) + 1e-10)
-                        min_rms = min(min_rms, rms)
-                if min_rms == float('inf'):
-                    retries -= 1
-                    time.sleep(0.1)  # Short delay before retry
-            
-            if min_rms == float('inf'):
-                print("\nWARNING: Could not get valid audio samples after multiple attempts!")
-                return None, None, None, None  # Return None to indicate calibration failure
-            
-            # Set initial levels - never allow None values after initialization
-            self.noise_floor = float(min_rms)
-            self.min_floor = float(min_rms)  # Keep minimum at noise floor
-            self.max_floor = float(min_rms + 60)  # Allow 60dB dynamic range above noise floor
-            self.rms_level = float(min_rms)  # Initialize RMS to noise floor
-            self.peak_level = float(min_rms)  # Initialize peak to noise floor
-                
-            print(f"\nMicrophone calibration successful:")
-            print(f"  Minimum RMS level: {min_rms:.1f} dB")
-            print(f"  Initial noise floor: {self.noise_floor:.1f} dB")
-            print(f"  Floor range: {self.min_floor:.1f} to {self.max_floor:.1f} dB")
-            print(f"  Sample rate: {rate} Hz")
-            
-            # Store stream info
+
             self.stream = stream
             self.rate = rate
             self.needs_resampling = needs_resampling
-            
+
             return stream, device_info, rate, needs_resampling
-            
+
         except Exception as e:
             raise RuntimeError(f"Failed to initialize audio: {str(e)}")
 
+    def _rms_db(self, float_block):
+        """Compute RMS in dB for a float32 block."""
+        if len(float_block) == 0:
+            return -96.0
+        rms = np.sqrt(np.mean(float_block ** 2))
+        return 20.0 * np.log10(max(rms, 1e-10))
+
     def bytes_to_float32_audio(self, audio_data, sample_rate=None):
-        """Convert bytes to float32 audio data"""
-        # Convert bytes to int16 numpy array
+        """
+        Convert int16-encoded bytes to float32 samples in [-1..1].
+        Returns (audio_float32, sample_rate).
+        """
         audio_int16 = np.frombuffer(audio_data, dtype=np.int16)
-        # Convert to float32 and normalize to [-1.0, 1.0]
         audio_float32 = audio_int16.astype(np.float32) / 32768.0
-        # Use provided sample rate or default to DESIRED_RATE
         return audio_float32, (sample_rate if sample_rate is not None else self.DESIRED_RATE)
 
-    def create_voice_profile(self, audio_data):
-        """
-        Create a voice profile from an audio segment.
-        Returns a dictionary containing spectral characteristics.
-        """
-        # Ensure audio data is valid
-        if len(audio_data) == 0:
-            return None
-            
-        # Remove DC offset and apply pre-emphasis
-        dc_removed = audio_data - np.mean(audio_data)
-        emphasized = np.zeros_like(dc_removed)
-        emphasized[0] = dc_removed[0]
-        emphasized[1:] = dc_removed[1:] - self.pre_emphasis * dc_removed[:-1]
-        
-        # Calculate spectral characteristics
-        nperseg = min(256, len(emphasized))
-        noverlap = min(nperseg - 1, nperseg // 2)
-        
-        try:
-            freqs, _, Sxx = signal.spectrogram(
-                emphasized,
-                fs=16000,
-                nperseg=nperseg,
-                noverlap=noverlap,
-                scaling='spectrum'
-            )
-            
-            # Focus on speech frequency bands
-            speech_mask = (freqs >= 100) & (freqs <= 3500)
-            speech_freqs = freqs[speech_mask]
-            speech_power = np.mean(Sxx[speech_mask, :], axis=1)
-            
-            # Calculate additional voice characteristics
-            zero_crossings = np.sum(np.abs(np.diff(np.signbit(emphasized)))) / len(emphasized)
-            rms = np.sqrt(np.mean(emphasized**2))
-            peak = np.max(np.abs(emphasized))
-            
-            # Create profile
-            profile = {
-                'spectral_signature': speech_power,
-                'frequency_bands': speech_freqs,
-                'zero_crossing_rate': zero_crossings,
-                'rms_level': 20 * np.log10(max(rms, 1e-10)),
-                'peak_level': 20 * np.log10(max(peak, 1e-10)),
-                'timestamp': time.time()
-            }
-            
-            return profile
-            
-        except Exception as e:
-            print(f"Error creating voice profile: {e}")
-            return None
-
-    def compare_voice_profile(self, audio_data, profile):
-        """
-        Compare audio segment with stored voice profile.
-        Returns similarity score between 0 and 1.
-        """
-        if profile is None or len(audio_data) == 0:
-            return 0.0
-            
-        try:
-            # Create temporary profile for comparison
-            current_profile = self.create_voice_profile(audio_data)
-            if current_profile is None:
-                return 0.0
-                
-            # Compare spectral signatures
-            ref_spectrum = profile['spectral_signature']
-            cur_spectrum = current_profile['spectral_signature']
-            
-            # Ensure spectra are the same length
-            min_len = min(len(ref_spectrum), len(cur_spectrum))
-            ref_spectrum = ref_spectrum[:min_len]
-            cur_spectrum = cur_spectrum[:min_len]
-            
-            # Calculate normalized cross-correlation
-            spectrum_similarity = np.corrcoef(ref_spectrum, cur_spectrum)[0, 1]
-            if np.isnan(spectrum_similarity):
-                spectrum_similarity = 0.0
-            
-            # Compare other characteristics with tolerance
-            zcr_similarity = 1.0 - min(1.0, abs(profile['zero_crossing_rate'] - 
-                                               current_profile['zero_crossing_rate']) / 0.01)
-            level_similarity = 1.0 - min(1.0, abs(profile['rms_level'] - 
-                                                 current_profile['rms_level']) / 20.0)
-            
-            # Weighted combination of similarities (more weight on basic characteristics)
-            total_similarity = (0.2 * max(0, spectrum_similarity) + 
-                              0.4 * zcr_similarity +      # More weight on pitch/timing
-                              0.4 * level_similarity)     # More weight on volume patterns
-            
-            return max(0.0, min(1.0, total_similarity))
-            
-        except Exception as e:
-            print(f"Error comparing voice profiles: {e}")
-            return 0.0
-
     def process_audio(self, audio_data):
-        """Process audio with professional techniques"""
-        # Check for empty or invalid input
+        """
+        Uses end_silence_duration from config to determine how much silence
+        must be detected to confirm speech has ended.
+        """
         if len(audio_data) == 0:
             return {
                 'audio': np.array([]),
                 'is_speech': False,
                 'db_level': self.rms_level,
                 'noise_floor': self.noise_floor,
-                'speech_ratio': 0,
-                'zero_crossings': 0,
+                'speech_ratio': 0.0,
+                'zero_crossings': 0.0,
                 'peak_level': self.peak_level
             }
-            
-        # Remove DC offset (with empty array check)
-        if len(audio_data) > 0:
-            dc_removed = audio_data - np.mean(audio_data)
-        else:
-            dc_removed = np.array([])
-        
-        # Apply pre-emphasis filter (with empty array check)
+
+        # 1) DC removal & pre-emphasis
+        dc_removed = audio_data - np.mean(audio_data)
         emphasized = np.zeros_like(dc_removed)
         if len(dc_removed) > 0:
             emphasized[0] = dc_removed[0] - self.pre_emphasis * self.prev_sample
             if len(dc_removed) > 1:
                 emphasized[1:] = dc_removed[1:] - self.pre_emphasis * dc_removed[:-1]
             self.prev_sample = dc_removed[-1]
-        
-        # Update levels with envelope following
+
+        # 2) Envelope (RMS & peak)
         now = time.time()
         dt = now - self.last_update
         self.last_update = now
-        
-        rms = np.sqrt(np.mean(emphasized**2))
-        peak = np.max(np.abs(emphasized))
-        
-        try:
-            # Convert to dB with safety checks
-            current_db_rms = float(20 * np.log10(max(rms, 1e-10)))
-            current_db_peak = float(20 * np.log10(max(peak, 1e-10)))
-            
-            # Store current values through property setters
-            self.current_db_rms = current_db_rms
-            self.current_db_peak = current_db_peak
-            
-            # Professional envelope following with safety
-            if self.rms_level is None:
-                self.rms_level = current_db_rms
-            else:
-                if current_db_rms > self.rms_level:
-                    alpha = 1.0 - np.exp(-dt / self.rms_attack)
-                else:
-                    alpha = 1.0 - np.exp(-dt / self.rms_release)
-                self.rms_level = float(self.rms_level + (current_db_rms - self.rms_level) * alpha)
-            
-            if self.peak_level is None:
-                self.peak_level = current_db_peak
-            else:
-                if current_db_peak > self.peak_level:
-                    alpha = 1.0 - np.exp(-dt / self.peak_attack)
-                else:
-                    alpha = 1.0 - np.exp(-dt / self.peak_release)
-                self.peak_level = float(self.peak_level + (current_db_peak - self.peak_level) * alpha)
-        except Exception as e:
-            print(f"Error updating levels: {e}")
-            # Use safe defaults if calculation fails
-            self.current_db_rms = -96.0
-            self.current_db_peak = -96.0
-            self.rms_level = -96.0
-            self.peak_level = -96.0
-        
-        # Track audio levels for noise floor calibration
+
+        block_rms = np.sqrt(np.mean(emphasized**2))
+        block_peak = np.max(np.abs(emphasized))
+        instant_rms_db = 20 * np.log10(max(block_rms, 1e-10))
+        instant_peak_db = 20 * np.log10(max(block_peak, 1e-10))
+
+        # Attack/Release for RMS
+        if instant_rms_db > self.rms_level:
+            alpha = 1.0 - np.exp(-dt / self.rms_attack)
+        else:
+            alpha = 1.0 - np.exp(-dt / self.rms_release)
+        self.rms_level += (instant_rms_db - self.rms_level) * alpha
+
+        # Attack/Release for Peak
+        if instant_peak_db > self.peak_level:
+            alpha = 1.0 - np.exp(-dt / self.peak_attack)
+        else:
+            alpha = 1.0 - np.exp(-dt / self.peak_release)
+        self.peak_level += (instant_peak_db - self.peak_level) * alpha
+
         self.level_history.append(self.rms_level)
-        self.calibration_samples.append(self.rms_level)
-        
-        # Periodic recalibration (noise floor should never be None after init)
-        if now - self.last_calibration > self.CALIBRATION_INTERVAL:
-            # Only recalibrate if levels have been stable (no speech)
-            level_std = np.std(self.level_history)
-            if level_std < 3.0:  # If levels haven't varied much
-                # Find minimum level in recent history
-                min_level = min(self.level_history)
-                # Only adjust if we found a new minimum
-                if min_level < self.noise_floor:
-                    self.noise_floor = min_level
-                    self.min_floor = self.noise_floor  # Keep minimum at noise floor
-                    self.max_floor = self.noise_floor + 60  # Maintain 60dB range
-                    print(f"\nRecalibrated noise floor to: {self.noise_floor:.1f} dB")
-                self.last_calibration = now
 
-        # Spectral analysis for speech detection with dynamic window size
-        if len(emphasized) > 0:
-            # Use smaller window size for short segments
-            nperseg = min(256, len(emphasized))
-            # Ensure noverlap is less than nperseg
-            noverlap = min(nperseg - 1, nperseg // 2)
-            
-            try:
-                freqs, times, Sxx = signal.spectrogram(
-                    emphasized, 
-                    fs=16000,
-                    nperseg=nperseg,
-                    noverlap=noverlap,
-                    scaling='spectrum'
-                )
-                speech_mask = (freqs >= 100) & (freqs <= 3500)
-                speech_energy = np.mean(Sxx[speech_mask, :]) if Sxx.size > 0 else 0
-                total_energy = np.mean(Sxx) if Sxx.size > 0 else 0
-                speech_ratio = speech_energy / total_energy if total_energy > 0 else 0
-            except Exception as e:
-                print(f"Spectrogram analysis failed: {e}")
-                speech_ratio = 0
-        else:
-            speech_ratio = 0
-        
-        # Calculate zero-crossings
-        zero_crossings = np.sum(np.abs(np.diff(np.signbit(emphasized)))) / len(emphasized)
-        
-        # Speech detection with spectral analysis and hysteresis
-        has_speech_character = speech_ratio > 1.02 and zero_crossings > 0.0002
-        
-        # Use configured thresholds relative to noise floor
-        open_threshold = self.speech_threshold_open  # dB above noise floor to open gate
-        close_threshold = self.speech_threshold_close  # dB above noise floor to close gate
-        
-        # Calculate level above floor for debugging with safety checks
-        try:
-            # Ensure we have valid values
-            if self.rms_level is None:
-                self.rms_level = float(self.current_db_rms)
-            if self.noise_floor is None:
-                # If we lost calibration, reinitialize all levels
-                self.noise_floor = float(self.current_db_rms)
-                self.min_floor = float(self.current_db_rms)
-                self.max_floor = float(self.current_db_rms + 60)
-                print(f"\nWarning: Reinitializing noise floor to {self.noise_floor:.1f} dB")
-                
-            # Calculate level with explicit float conversion
-            level_above_floor = float(self.rms_level) - float(self.noise_floor)
-        except Exception as e:
-            print(f"\nError calculating level above floor: {e}")
-            level_above_floor = 0.0
-        
+        # 3) Spectral ratio & gating thresholds
+        speech_ratio, zero_crossings = self._spectral_analysis(emphasized)
+        level_above_floor = self.rms_level - self.noise_floor
+
+        open_threshold  = self.speech_threshold_open   # from config
+        close_threshold = self.speech_threshold_close  # from config
+
+        # Initialize state tracking if needed
+        if not hasattr(self, 'silence_time'):
+            self.silence_time = 0.0
+
+        # Get required silence duration from config
+        end_silence = self.config["speech_detection"]["end_silence_duration"]
+
+        # Detect definite speech with more lenient conditions
+        is_definite_speech = (
+            level_above_floor > open_threshold or  # High level
+            speech_ratio > self.ratio_override     # Very strong speech characteristics
+        )
+
+        # Detect probable speech with looser conditions
+        is_probable_speech = (
+            level_above_floor > (close_threshold + 2.0) and  # Above close threshold with margin
+            speech_ratio > (self.close_ratio * 1.2)          # Above close ratio with margin
+        )
+
+        # Handle state transitions
         if not self.is_speaking:
-            # Check if should open gate
-            is_speech = (level_above_floor > open_threshold and has_speech_character)
-            if is_speech:
-                # print(f"\n[DEBUG] Speech gate opening:")
-                # print(f"  Level: {self.rms_level:.1f} dB")
-                # print(f"  Floor: {self.noise_floor:.1f} dB")
-                # print(f"  Above floor: {level_above_floor:.1f} dB")
-                # print(f"  Speech ratio: {speech_ratio:.3f}")
-                # print(f"  Zero crossings: {zero_crossings:.4f}")
+            if is_definite_speech:
                 self.is_speaking = True
-                self.hold_counter = 50  # Increased hold samples for better phrase detection
+                self.silence_time = 0.0
+                print(f"Speech START - RMS: {self.rms_level:.1f} dB, Floor: {self.noise_floor:.1f} dB, Ratio: {speech_ratio:.3f}")
         else:
-            # Check if should close gate
-            if level_above_floor < close_threshold:
-                if self.hold_counter > 0:
-                    self.hold_counter -= 1
-                    is_speech = True
-                    # if self.hold_counter % 10 == 0:  # Print debug every 10 samples
-                    #     print(f"\n[DEBUG] Hold counter: {self.hold_counter}")
-                    #     print(f"  Level: {self.rms_level:.1f} dB")
-                    #     print(f"  Above floor: {level_above_floor:.1f} dB")
-                else:
-                    # print(f"\n[DEBUG] Speech gate closing:")
-                    # print(f"  Level: {self.rms_level:.1f} dB")
-                    # print(f"  Floor: {self.noise_floor:.1f} dB")
-                    # print(f"  Above floor: {level_above_floor:.1f} dB")
-                    # print(f"  Speech ratio: {speech_ratio:.3f}")
-                    # print(f"  Zero crossings: {zero_crossings:.4f}")
+            # Already speaking - check for silence or continued speech
+            if is_definite_speech or is_probable_speech:
+                # Any kind of speech resets silence counter
+                self.silence_time = 0.0
+            else:
+                # Accumulate silence time if no speech detected
+                self.silence_time += dt
+                # End speech only after enough silence
+                if self.silence_time >= end_silence:
                     self.is_speaking = False
-                    is_speech = False
-            else:
-                self.hold_counter = 50  # Reset hold counter while still above threshold
-                is_speech = True
+                    self.silence_time = 0.0
+                    print(f"Speech END - RMS: {self.rms_level:.1f} dB, Floor: {self.noise_floor:.1f} dB, Ratio: {speech_ratio:.3f}")
 
-        # Log state changes for debugging
-        if self.is_speaking != self.debug_last_state:
-            if self.is_speaking:
-                print(f"\nSpeech START - Level: {self.rms_level:.1f}dB, Floor: {self.noise_floor:.1f}dB, Ratio: {speech_ratio:.3f}")
-            else:
-                print(f"\nSpeech END - Level: {self.rms_level:.1f}dB, Floor: {self.noise_floor:.1f}dB, Ratio: {speech_ratio:.3f}")
-            self.debug_last_state = self.is_speaking
+        # 5) Debug every 50 frames
+        if self.debug_counter % 50 == 0:
+            print(f"\n[DEBUG] RMS: {self.rms_level:.1f} dB,"
+                  f" Floor: {self.noise_floor:.1f} dB,"
+                  f" AboveFloor: {level_above_floor:.1f} dB,"
+                  f" Ratio: {speech_ratio:.3f},"
+                  f" SilenceTime: {self.silence_time:.3f}s")
+        self.debug_counter += 1
 
         return {
             'audio': emphasized,
@@ -619,68 +479,42 @@ class AudioCore:
             'peak_level': self.peak_level
         }
 
-    def calculate_volume(self, audio_data):
-        """Calculate volume using professional audio metering"""
-        # Safety check for valid levels
-        if self.rms_level is None or self.noise_floor is None or self.max_floor is None:
-            return 0.0
-            
-        if self.rms_level > self.noise_floor:
-            # Professional audio compression curve
-            db_above_floor = float(self.rms_level - self.noise_floor)  # Ensure float arithmetic
-            ratio = 0.8  # Subtle compression ratio
-            knee = 6.0   # Soft knee width in dB
-            
-            # Soft knee compression
-            if db_above_floor < -knee/2:
-                gain = db_above_floor
-            elif db_above_floor > knee/2:
-                gain = -knee/2 + (db_above_floor - (-knee/2)) / ratio
-            else:
-                # Smooth transition in knee region
-                gain = db_above_floor + ((1/ratio - 1) * 
-                       (db_above_floor + knee/2)**2 / (2*knee))
-            
-            # Convert to linear scale with proper normalization
-            volume = np.power(10, gain/20) / np.power(10, (self.max_floor - self.noise_floor)/20)
-            return max(0.05, min(1.0, volume))
-        return 0.0
-
-    def get_thresholds(self):
-        """Get current threshold and level values"""
+    def _spectral_analysis(self, float_block):
+        """
+        Compute a speech ratio (speech-band energy vs. total) plus zero-crossing rate.
+        """
+        if len(float_block) == 0:
+            return 0.0, 0.0
         try:
-            # Return safe values if any level is invalid
-            if any(x is None for x in [self.noise_floor, self.rms_level, self.peak_level]):
-                return {
-                    'noise_floor': -96.0,
-                    'speech_threshold_open': -66.0,  # -96 + 30
-                    'speech_threshold_close': -71.0, # -96 + 25
-                    'rms_level': -96.0,
-                    'peak_level': -96.0
-                }
-            
-            # Calculate thresholds with explicit float conversions
-            noise_floor = float(self.noise_floor)
-            return {
-                'noise_floor': noise_floor,
-                'speech_threshold_open': float(noise_floor + self.speech_threshold_open),
-                'speech_threshold_close': float(noise_floor + self.speech_threshold_close),
-                'rms_level': float(self.rms_level),
-                'peak_level': float(self.peak_level)
-            }
-        except Exception as e:
-            print(f"Error getting thresholds: {e}")
-            # Return safe defaults on error
-            return {
-                'noise_floor': -96.0,
-                'speech_threshold_open': -66.0,
-                'speech_threshold_close': -71.0,
-                'rms_level': -96.0,
-                'peak_level': -96.0
-            }
+            nperseg = min(256, len(float_block))
+            noverlap = nperseg // 2
+            freqs, _, Sxx = signal.spectrogram(
+                float_block,
+                fs=16000,
+                nperseg=nperseg,
+                noverlap=noverlap,
+                scaling='spectrum'
+            )
+            speech_mask = (freqs >= 100) & (freqs <= 3500)
+            if Sxx.size > 0:
+                speech_energy = np.mean(Sxx[speech_mask, :], axis=1)
+                total_energy  = np.mean(Sxx, axis=0)
+                ratio = (
+                    np.mean(speech_energy) / np.mean(total_energy)
+                    if np.mean(total_energy) > 0 else 0.0
+                )
+            else:
+                ratio = 0.0
+
+            # Zero-crossing rate
+            zc = np.sum(np.abs(np.diff(np.signbit(float_block)))) / len(float_block)
+            return ratio, zc
+
+        except Exception:
+            return 0.0, 0.0
 
     def close(self):
-        """Clean up audio resources"""
+        """Close the audio stream if open."""
         if self.stream is not None:
             try:
                 self.stream.stop()
@@ -688,3 +522,27 @@ class AudioCore:
                 self.stream = None
             except Exception as e:
                 print(f"Error closing audio stream: {e}")
+
+    def calculate_volume(self, audio_data):
+        """
+        Example method to calculate volume in a compressed scale [0..1].
+        Not used by gating, but can be used to display a meter in a GUI.
+        """
+        if self.rms_level is None or self.noise_floor is None or self.max_floor is None:
+            return 0.0
+
+        current_floor = self.noise_floor_ema
+        if self.rms_level > current_floor:
+            db_above_floor = float(self.rms_level - self.noise_floor)
+            ratio = 0.8
+            knee = 6.0
+            if db_above_floor < -knee / 2:
+                gain = db_above_floor
+            elif db_above_floor > knee / 2:
+                gain = -knee / 2 + (db_above_floor - (-knee / 2)) / ratio
+            else:
+                gain = db_above_floor + ((1 / ratio - 1) *
+                        (db_above_floor + knee / 2)**2 / (2 * knee))
+            volume = np.power(10, gain / 20) / np.power(10, (self.max_floor - self.noise_floor) / 20)
+            return max(0.05, min(1.0, volume))
+        return 0.0

@@ -50,7 +50,7 @@
     "speech_detection": {
         "preroll_duration": 0.5,
         "min_speech_duration": 0.5,
-        "max_silence_duration": 0.8,
+        "end_silence_duration": 0.8,
         "thresholds": {
             "open": 20.0,
             "close": 15.0

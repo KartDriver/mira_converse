@@ -48,7 +48,7 @@ SERVER_PORT = CONFIG['server']['websocket']['port']
 
 # Generate unique client ID
 CLIENT_ID = uuid.uuid4()
-SERVER_URI = f"ws://{SERVER_HOST}:{SERVER_PORT}?api_key={API_KEY}&client_id={CLIENT_ID}"  # Add client_id to URI
+SERVER_URI = f"ws://{SERVER_HOST}:{SERVER_PORT}?api_key={API_KEY}&client_id={CLIENT_ID}"
 
 # Trigger word configuration
 TRIGGER_WORD = CONFIG['assistant']['name']
@@ -90,7 +90,7 @@ async def record_and_send_audio(websocket, audio_interface, audio_core):
                     await asyncio.sleep(0.1)
                     continue
 
-                # Update audio interface with float32 audio data
+                # Update audio interface with float32 audio data (for GUI meters)
                 if audio_interface and audio_interface.has_gui:
                     audio_interface.process_audio(audio_data)
 
@@ -211,10 +211,8 @@ class AsyncThread(threading.Thread):
             try:
                 print(f"\nAttempting to connect to server at {SERVER_URI} (attempt {retry_count + 1}/{max_retries})...")
 
-                # Try to connect with timeout and API key in header
-                self.websocket = await websockets.connect(
-                    SERVER_URI
-                )
+                # Try to connect
+                self.websocket = await websockets.connect(SERVER_URI)
                 print(f"Connected to server at {SERVER_URI}.")
 
                 # Wait for authentication response
@@ -271,7 +269,7 @@ class AsyncThread(threading.Thread):
 
             # Verify all audio levels are valid
             if None in (audio_core.rms_level, audio_core.peak_level,
-                       audio_core.min_floor, audio_core.max_floor):
+                        audio_core.min_floor, audio_core.max_floor):
                 print("\nError: Audio levels not properly initialized")
                 return
 
@@ -283,7 +281,7 @@ class AsyncThread(threading.Thread):
 
             # Send calibrated noise floor to server and wait for acknowledgment
             print(f"\nSending calibrated noise floor to server: {audio_core.noise_floor:.1f} dB")
-            await self.websocket.send(f"NOISE_FLOOR:{audio_core.noise_floor}:{CLIENT_ID}")  # Include client ID in NOISE_FLOOR message
+            await self.websocket.send(f"NOISE_FLOOR:{audio_core.noise_floor}:{CLIENT_ID}")  # Include client ID
 
             # Wait for server to be ready (with timeout)
             try:
