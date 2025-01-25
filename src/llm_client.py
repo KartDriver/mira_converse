@@ -93,7 +93,7 @@ class LLMClient:
 
             # Create chat completion request with streaming
             stream = await self.client.chat.completions.create(
-                model=self.config["llm"]["model_path"],
+                model=self.config["llm"]["model_name"],
                 messages=messages,
                 temperature=self.config["llm"]["conversation"]["temperature"],
                 max_tokens=self.config["llm"]["conversation"]["response_max_tokens"],

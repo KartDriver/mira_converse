@@ -121,7 +121,7 @@ Here's a detailed explanation of each configuration section:
 "llm": {
     "server": "10.5.2.10",           // LLM server host
     "port": 8000,                    // LLM server port
-    "model_path": "/path/to/model",  // Path to LLM model
+    "model_name": "your_model_name",  // Name of the LLM model to use
     "api_base": "http://10.5.2.11:8000/v1",  // API endpoint
     "api_key": "YOUR_API_KEY_HERE",  // API key for LLM service
     "conversation": {

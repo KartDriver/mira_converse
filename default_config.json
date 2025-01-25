@@ -22,7 +22,7 @@
     "llm": {
         "server": "localhost",
         "port": 8000,
-        "model_path": "/path/to/llm/model",
+        "model_name": "your_model_name",
         "api_base": "http://localhost:8000/v1",
         "api_key": "your_api_key_here",
         "conversation": {
