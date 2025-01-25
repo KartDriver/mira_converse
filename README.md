@@ -14,10 +14,18 @@ A real-time voice interaction system that combines speech recognition, natural l
 
 ## System Requirements
 
+### Server Requirements
 - Python 3.8 or higher
-- CUDA-capable GPU for server (optional but recommended)
+- NVIDIA GPU with at least 4GB VRAM (required for running both Whisper and Kokoro models)
+  - GPU acceleration is required for real-time performance
+  - CUDA toolkit must be installed for GPU support
+- Sufficient disk space for models (approximately 10GB total)
+
+### Client Requirements
+- Python 3.8 or higher
 - Audio input device (microphone)
 - Audio output device (speakers)
+- Basic CPU for audio processing
 
 ## Installation
 
@@ -35,9 +43,23 @@ pip install -r server_requirements.txt
 ```
 
 3. Set up the required models:
-   - Download Whisper model
-   - Download Kokoro model and voice packs
-   - Configure model paths in config.json
+   - Download the Whisper speech-to-text model from [HuggingFace](https://huggingface.co/openai/whisper-large-v3-turbo)
+   - Download the Kokoro text-to-speech model from [HuggingFace](https://huggingface.co/hexgrad/Kokoro-82M)
+   - Download the desired voice packs for Kokoro from the same repository
+   - Configure the model paths in config.json to point to your downloaded models
+
+Note: The models are large files (several GB) and require sufficient disk space. Make sure to use the paths where you downloaded the models in the config.json file:
+```json
+"models": {
+    "whisper": {
+        "path": "/path/to/whisper-large-v3-turbo"
+    },
+    "kokoro": {
+        "path": "/path/to/Kokoro-82M",
+        "voice_name": "af"  // Choose your preferred voice pack
+    }
+}
+```
 
 ### Client Setup
 
