@@ -46,9 +46,10 @@ pip install -r server_requirements.txt
    - Download the Whisper speech-to-text model from [HuggingFace](https://huggingface.co/openai/whisper-large-v3-turbo)
    - Download the Kokoro text-to-speech model from [HuggingFace](https://huggingface.co/hexgrad/Kokoro-82M)
    - Download the desired voice packs for Kokoro from the same repository
-   - Configure the model paths in config.json to point to your downloaded models
+   - Create your configuration file (see Configuration section below)
+   - Set the downloaded model paths in your config.json
 
-Note: The models are large files (several GB) and require sufficient disk space. Make sure to use the paths where you downloaded the models in the config.json file:
+Note: The models are large files (several GB) and require sufficient disk space. Make sure to use the correct paths where you downloaded the models in your config.json file:
 ```json
 "models": {
     "whisper": {
@@ -70,7 +71,22 @@ pip install -r client_requirements.txt
 
 ## Configuration
 
-The system is configured through `config.json`. Here's a detailed explanation of each section:
+The system uses a configuration file to manage all settings. To get started:
+
+1. Copy the default configuration file to create your local config:
+```bash
+cp default_config.json config.json
+```
+
+2. Edit `config.json` with your specific settings:
+   - Set paths to your downloaded models
+   - Configure server addresses and ports
+   - Set API keys
+   - Adjust audio processing parameters if needed
+
+Note: `config.json` is ignored by git to keep your local settings and sensitive data private. The `default_config.json` serves as a template with example values.
+
+Here's a detailed explanation of each configuration section:
 
 ### Assistant Settings
 ```json
