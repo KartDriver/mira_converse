@@ -8,8 +8,6 @@ from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 import time
 import sys
 import json
-sys.path.append('/mnt/models/hexgrad/Kokoro-82M')
-from models import build_model
 from collections import deque
 from src.audio_core import AudioCore
 from urllib.parse import urlparse, parse_qs  # Import for URI parsing
@@ -101,6 +99,8 @@ asr_pipeline = pipeline(
 
 print("Loading TTS model...")
 # Load Kokoro TTS model
+sys.path.append(KOKORO_PATH)
+from models import build_model
 tts_model = build_model(f'{KOKORO_PATH}/kokoro-v0_19.pth', device)
 VOICE_NAME = CONFIG['server']['models']['kokoro']['voice_name']
 tts_voicepack = torch.load(f'{KOKORO_PATH}/voices/{VOICE_NAME}.pt', weights_only=True).to(device)
