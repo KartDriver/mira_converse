@@ -8,7 +8,7 @@
             "port": 8765,
             "api_key": "audio_chat_secure_key_2024"
         },
-        "gpu_device": "cuda:4",
+        "gpu_device": "auto",
         "models": {
             "whisper": {
                 "path": "/mnt/models/openai/whisper-large-v3-turbo"

@@ -25,8 +25,49 @@ TRIGGER_WORD = CONFIG['assistant']['name'].lower()
 # CONFIG & MODEL LOADING
 ################################################################################
 
-# Set device from config
-device = CONFIG['server']['gpu_device'] if torch.cuda.is_available() else "cpu"
+def find_best_gpu():
+    """Find the NVIDIA GPU with the most available VRAM (>= 4GB)"""
+    if not torch.cuda.is_available():
+        return "cpu"
+    
+    try:
+        import subprocess
+        import re
+        
+        # Run nvidia-smi to get memory info
+        result = subprocess.run(['nvidia-smi', '--query-gpu=index,memory.total,memory.used,memory.free', '--format=csv,noheader,nounits'], 
+                              capture_output=True, text=True, check=True)
+        
+        best_gpu = None
+        max_free_memory = 0
+        min_required_gb = 4
+        
+        # Parse each line of nvidia-smi output
+        for line in result.stdout.strip().split('\n'):
+            gpu_id, total, used, free = map(int, line.strip().split(', '))
+            free_memory_gb = free / 1024  # Convert MiB to GB
+            
+            print(f"GPU {gpu_id}: {free_memory_gb:.2f}GB free VRAM")
+            
+            if free_memory_gb >= min_required_gb and free_memory_gb > max_free_memory:
+                max_free_memory = free_memory_gb
+                best_gpu = gpu_id
+        
+        if best_gpu is not None:
+            return f"cuda:{best_gpu}"
+            
+    except Exception as e:
+        print(f"Error getting GPU memory info: {e}")
+        
+    return "cpu"
+
+# Set device from config or auto-detect
+device = CONFIG['server']['gpu_device']
+if device == "auto":
+    device = find_best_gpu()
+elif not torch.cuda.is_available():
+    device = "cpu"
+
 KOKORO_PATH = CONFIG['server']['models']['kokoro']['path']
 torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
 
